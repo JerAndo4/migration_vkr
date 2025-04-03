@@ -1,0 +1,32 @@
+graph TD
+    A[Сбор метрик<br>состояния] --> B[Проверка<br>порогов]
+    A --> C[Предсказание<br>будущей нагрузки]
+    
+    B --> D{Превышение<br>порога?}
+    C --> E{Прогноз<br>перегрузки?}
+    
+    D -->|Да| F[Реактивная миграция<br>на основе<br>марковских процессов]
+    E -->|Да| G[Проактивная миграция<br>на основе<br>Q-Learning]
+    
+    D -->|Нет| E
+    E -->|Нет| A
+    
+    F --> H[Выполнение<br>миграции]
+    G --> H
+    
+    H --> I[Обновление<br>матрицы переходов]
+    H --> J[Обновление<br>Q-значений]
+    
+    I --> A
+    J --> A
+
+    style A fill:#bbf,stroke:#333,stroke-width:1px
+    style B fill:#bbf,stroke:#333,stroke-width:1px
+    style C fill:#bbf,stroke:#333,stroke-width:1px
+    style D fill:#fbb,stroke:#333,stroke-width:1px
+    style E fill:#fbb,stroke:#333,stroke-width:1px
+    style F fill:#fdb,stroke:#333,stroke-width:1px
+    style G fill:#fdb,stroke:#333,stroke-width:1px
+    style H fill:#bfb,stroke:#333,stroke-width:1px
+    style I fill:#fdb,stroke:#333,stroke-width:1px
+    style J fill:#fdb,stroke:#333,stroke-width:1px

@@ -1,0 +1,36 @@
+graph TD
+    subgraph Облачный центр
+        cloud[Облачный узел]
+    end
+    
+    subgraph Граничные вычисления
+        edge1[Граничный узел 1]
+        edge2[Граничный узел 2]
+        edge3[Граничный узел 3]
+    end
+    
+    subgraph Распределенные сервисы
+        s1[Сервисы 1-5]
+        s2[Сервисы 6-10]
+        s3[Сервисы 11-15]
+        s4[Сервисы 16-20]
+    end
+    
+    cloud --- edge1
+    cloud --- edge2
+    cloud --- edge3
+    
+    edge1 --- s1
+    edge1 --- s2
+    edge2 --- s2
+    edge2 --- s3
+    edge3 --- s3
+    edge3 --- s4
+    
+    classDef cloud fill:#f9f,stroke:#333,stroke-width:2px
+    classDef edge fill:#bbf,stroke:#333,stroke-width:1px
+    classDef service fill:#bfb,stroke:#333,stroke-width:1px
+    
+    class cloud cloud
+    class edge1,edge2,edge3 edge
+    class s1,s2,s3,s4 service

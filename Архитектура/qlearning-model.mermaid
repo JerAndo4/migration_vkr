@@ -1,0 +1,19 @@
+graph TD
+    A[Сбор метрик<br>состояния] --> B[Дискретизация<br>состояния]
+    B --> C[Предсказание<br>будущей нагрузки]
+    C --> D{Прогноз<br>перегрузки?}
+    D -->|Нет| A
+    D -->|Да| E[Выбор действия<br>на основе Q-таблицы<br>или исследования]
+    E --> F[Выполнение<br>миграции]
+    F --> G[Расчет награды<br>за действие]
+    G --> H[Обновление<br>Q-значений]
+    H --> A
+
+    style A fill:#bbf,stroke:#333,stroke-width:1px
+    style B fill:#bbf,stroke:#333,stroke-width:1px
+    style C fill:#fdb,stroke:#333,stroke-width:1px
+    style D fill:#fbb,stroke:#333,stroke-width:1px
+    style E fill:#fdb,stroke:#333,stroke-width:1px
+    style F fill:#bfb,stroke:#333,stroke-width:1px
+    style G fill:#fdb,stroke:#333,stroke-width:1px
+    style H fill:#fdb,stroke:#333,stroke-width:1px

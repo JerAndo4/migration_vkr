@@ -1,0 +1,17 @@
+graph TD
+    A[Мониторинг метрик узлов] --> B{Превышение<br>порога?}
+    B -->|Нет| A
+    B -->|Да| C[Выбор сервиса<br>для миграции]
+    C --> D[Расчет вероятностей<br>переходов по<br>матрице]
+    D --> E[Выбор целевого<br>узла]
+    E --> F[Выполнение<br>миграции]
+    F --> G[Обновление<br>матрицы переходов]
+    G --> A
+
+    style A fill:#bbf,stroke:#333,stroke-width:1px
+    style B fill:#fbb,stroke:#333,stroke-width:1px
+    style C fill:#fdb,stroke:#333,stroke-width:1px
+    style D fill:#fdb,stroke:#333,stroke-width:1px
+    style E fill:#fdb,stroke:#333,stroke-width:1px
+    style F fill:#bfb,stroke:#333,stroke-width:1px
+    style G fill:#bbf,stroke:#333,stroke-width:1px
