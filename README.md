@@ -6,7 +6,7 @@
 
 ## Структура файлов
 
-### Файлы исходного кода
+### Файлы исходного кода в каталоге Python
 
 - `threshold_model.py` - Реализация пороговой модели с марковскими процессами
 - `qlearning_model.py` - Реализация проактивной модели на основе Q-Learning
@@ -19,35 +19,18 @@
 
 После запуска моделирования будут сгенерированы следующие файлы:
 
-#### CSV-файлы с данными
+#### CSV-файлы с данными в каталоге Results
 - `critical_latency.csv`, `standard_latency.csv`, `mixed_latency.csv`, `dynamic_latency.csv` - Метрики задержки для каждого сценария
 - `critical_jitter.csv`, `standard_jitter.csv`, `mixed_jitter.csv`, `dynamic_jitter.csv` - Метрики джиттера для каждого сценария
 - `critical_energy.csv`, `standard_energy.csv`, `mixed_energy.csv`, `dynamic_energy.csv` - Метрики энергопотребления для каждого сценария
 - `critical_migrations.csv`, `standard_migrations.csv`, `mixed_migrations.csv`, `dynamic_migrations.csv` - Количество миграций для каждого сценария
 - `comparative_results.csv` - Комплексная таблица, сравнивающая все модели по всем сценариям
 
-#### Файлы визуализации
+#### Файлы визуализации в каталоге Results
 - `critical_results.png`, `standard_results.png`, `mixed_results.png`, `dynamic_results.png` - Графики производительности для каждого сценария
 - `critical_migrations.png`, `standard_migrations.png`, `mixed_migrations.png`, `dynamic_migrations.png` - Визуализация количества миграций
 - `summary_results.png` - Сводное сравнение ключевых метрик по всем сценариям
 - `summary_migrations.png` - Сводное сравнение количества миграций по всем сценариям
-
-## Инструкции по установке
-
-1. Убедитесь, что на вашей системе установлен Python 3.6+
-2. Установите необходимые зависимости:
-   ```bash
-   pip install numpy pandas matplotlib
-   ```
-3. Поместите все файлы исходного кода в один каталог
-
-## Инструкции по использованию
-
-Для запуска полного моделирования и генерации всех результатов:
-
-```bash
-python main.py
-```
 
 Процесс моделирования:
 1. Инициализирует три модели миграции с идентичными параметрами
@@ -103,4 +86,3 @@ NUM_NODES = 10      # По умолчанию: 10 узлов
 NUM_SERVICES = 20   # По умолчанию: 20 сервисов
 SIMULATION_TIME = 1000  # По умолчанию: 1000 временных тактов
 ```
-# migration_vkr
