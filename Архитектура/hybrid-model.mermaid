@@ -11,6 +11,8 @@ graph TD
     D -->|Нет| E
     E -->|Нет| A
     
+    linkStyle default stroke:black,color:black
+    
     F --> H[Выполнение<br>миграции]
     G --> H
     
@@ -20,13 +22,13 @@ graph TD
     I --> A
     J --> A
 
-    style A fill:#bbf,stroke:#333,stroke-width:1px
-    style B fill:#bbf,stroke:#333,stroke-width:1px
-    style C fill:#bbf,stroke:#333,stroke-width:1px
-    style D fill:#fbb,stroke:#333,stroke-width:1px
-    style E fill:#fbb,stroke:#333,stroke-width:1px
-    style F fill:#fdb,stroke:#333,stroke-width:1px
-    style G fill:#fdb,stroke:#333,stroke-width:1px
-    style H fill:#bfb,stroke:#333,stroke-width:1px
-    style I fill:#fdb,stroke:#333,stroke-width:1px
-    style J fill:#fdb,stroke:#333,stroke-width:1px
+    classDef default fill:white,stroke:black,stroke-width:1px,color:black;
+    classDef decision fill:#fbb,stroke:black,stroke-width:1px,color:black;
+    classDef process fill:#fdb,stroke:black,stroke-width:1px,color:black;
+    classDef data fill:#bbf,stroke:black,stroke-width:1px,color:black;
+    classDef action fill:#bfb,stroke:black,stroke-width:1px,color:black;
+    
+    class A,B,C data;
+    class D,E decision;
+    class F,G,I,J process;
+    class H action;

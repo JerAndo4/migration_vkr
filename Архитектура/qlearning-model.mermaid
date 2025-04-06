@@ -1,19 +1,21 @@
 graph TD
-    A[Сбор метрик<br>состояния] --> B[Дискретизация<br>состояния]
-    B --> C[Предсказание<br>будущей нагрузки]
-    C --> D{Прогноз<br>перегрузки?}
-    D -->|Нет| A
-    D -->|Да| E[Выбор действия<br>на основе Q-таблицы<br>или исследования]
-    E --> F[Выполнение<br>миграции]
-    F --> G[Расчет награды<br>за действие]
-    G --> H[Обновление<br>Q-значений]
+    A[Сбор метрик состояния] --> B[Дискретизация состояния]
+    B --> C[Предсказание будущей нагрузки]
+    C --> D{Прогноз перегрузки?}
+    D -- Нет --> A
+    D -- Да --> E[Выбор действия на основе Q-таблицы или исследования]
+    E --> F[Выполнение миграции]
+    F --> G[Расчет награды за действие]
+    G --> H[Обновление Q-значений]
     H --> A
 
-    style A fill:#bbf,stroke:#333,stroke-width:1px
-    style B fill:#bbf,stroke:#333,stroke-width:1px
-    style C fill:#fdb,stroke:#333,stroke-width:1px
-    style D fill:#fbb,stroke:#333,stroke-width:1px
-    style E fill:#fdb,stroke:#333,stroke-width:1px
-    style F fill:#bfb,stroke:#333,stroke-width:1px
-    style G fill:#fdb,stroke:#333,stroke-width:1px
-    style H fill:#fdb,stroke:#333,stroke-width:1px
+    classDef default fill:white,stroke:black,stroke-width:1px,color:black;
+    classDef decision fill:#fbb,stroke:black,stroke-width:1px,color:black;
+    classDef process fill:#fdb,stroke:black,stroke-width:1px,color:black;
+    classDef data fill:#bbf,stroke:black,stroke-width:1px,color:black;
+    classDef action fill:#bfb,stroke:black,stroke-width:1px,color:black;
+    
+    class A,B data;
+    class C,E,G,H process;
+    class D decision;
+    class F action;

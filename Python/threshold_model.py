@@ -56,9 +56,11 @@ class ThresholdMarkovModel:
         """Проверка превышения порогов"""
         violations = []
         
-        for node_id, metrics in node_metrics.items():
-            if metrics['cpu_usage'] > self.cpu_threshold or metrics['memory_usage'] > self.memory_threshold:
-                violations.append(node_id)
+        for node_id in range(len(self.nodes)):  # Обеспечиваем перебор по индексам узлов
+            if node_id in node_metrics:
+                metrics = node_metrics[node_id]
+                if metrics['cpu_usage'] > self.cpu_threshold or metrics['memory_usage'] > self.memory_threshold:
+                    violations.append(node_id)
                 
         return violations
     
@@ -71,7 +73,10 @@ class ThresholdMarkovModel:
             return migrations
             
         # Создание вектора загрузки для всех узлов
-        load_vector = [node_metrics[node_id]['cpu_usage'] for node_id in range(len(self.nodes))]
+        load_vector = [0] * len(self.nodes)
+        for node_id in range(len(self.nodes)):
+            if node_id in node_metrics:
+                load_vector[node_id] = node_metrics[node_id]['cpu_usage']
         
         for node_id in violations:
             # Поиск сервисов на перегруженном узле
@@ -85,6 +90,15 @@ class ThresholdMarkovModel:
             
             # Выбор целевого узла
             target_node = self.select_target_node(node_id, load_vector)
+            
+            # Проверка, что целевой узел отличается от исходного
+            if target_node == node_id:
+                # Попытка выбрать другой узел
+                available_nodes = [i for i in range(len(self.nodes)) if i != node_id and load_vector[i] < 0.7]
+                if available_nodes:
+                    target_node = np.random.choice(available_nodes)
+                else:
+                    continue  # Пропускаем миграцию, если нет подходящих узлов
             
             # Обновление матрицы переходов
             self.update_transition_matrix(node_id, target_node)

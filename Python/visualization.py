@@ -2,6 +2,9 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
 
+# Установка русского шрифта для matplotlib
+plt.rcParams['font.family'] = 'DejaVu Sans'
+
 def visualize_scenario_results(scenario_type):
     """
     Визуализация результатов тестирования для заданного сценария
@@ -9,6 +12,21 @@ def visualize_scenario_results(scenario_type):
     Параметры:
     scenario_type - тип сценария ('critical', 'standard', 'mixed', 'dynamic')
     """
+    # Перевод типов сценариев
+    scenario_names = {
+        'critical': 'Критический',
+        'standard': 'Стандартный',
+        'mixed': 'Смешанный',
+        'dynamic': 'Динамический'
+    }
+    
+    # Перевод названий моделей
+    model_names = {
+        'threshold': 'Пороговая',
+        'qlearning': 'Q-learning',
+        'hybrid': 'Гибридная'
+    }
+    
     # Загрузка данных из CSV-файлов
     latency_df = pd.read_csv(f"{scenario_type}_latency.csv")
     jitter_df = pd.read_csv(f"{scenario_type}_jitter.csv")
@@ -20,8 +38,14 @@ def visualize_scenario_results(scenario_type):
     # График задержки
     plt.subplot(3, 1, 1)
     for column in latency_df.columns:
-        plt.plot(latency_df[column], label=column)
-    plt.title(f'Задержка в сценарии "{scenario_type}"')
+        label = model_names.get(column, column)
+        plt.plot(latency_df[column], label=label)
+    
+    # Добавление линии SLA для задержки
+    sla_latency = 25  # Пример значения SLA для задержки (мс)
+    plt.axhline(y=sla_latency, color='r', linestyle='--', label='SLA')
+    
+    plt.title(f'Задержка в сценарии "{scenario_names.get(scenario_type, scenario_type)}"')
     plt.xlabel('Время (такты)')
     plt.ylabel('Задержка (мс)')
     plt.legend()
@@ -30,8 +54,14 @@ def visualize_scenario_results(scenario_type):
     # График джиттера
     plt.subplot(3, 1, 2)
     for column in jitter_df.columns:
-        plt.plot(jitter_df[column], label=column)
-    plt.title(f'Джиттер в сценарии "{scenario_type}"')
+        label = model_names.get(column, column)
+        plt.plot(jitter_df[column], label=label)
+    
+    # Добавление линии SLA для джиттера
+    sla_jitter = 10  # Пример значения SLA для джиттера (мс)
+    plt.axhline(y=sla_jitter, color='r', linestyle='--', label='SLA')
+    
+    plt.title(f'Джиттер в сценарии "{scenario_names.get(scenario_type, scenario_type)}"')
     plt.xlabel('Время (такты)')
     plt.ylabel('Джиттер (мс)')
     plt.legend()
@@ -40,8 +70,10 @@ def visualize_scenario_results(scenario_type):
     # График энергопотребления
     plt.subplot(3, 1, 3)
     for column in energy_df.columns:
-        plt.plot(energy_df[column], label=column)
-    plt.title(f'Энергопотребление в сценарии "{scenario_type}"')
+        label = model_names.get(column, column)
+        plt.plot(energy_df[column], label=label)
+    
+    plt.title(f'Энергопотребление в сценарии "{scenario_names.get(scenario_type, scenario_type)}"')
     plt.xlabel('Время (такты)')
     plt.ylabel('Энергопотребление (Вт)')
     plt.legend()
@@ -70,7 +102,9 @@ def visualize_scenario_results(scenario_type):
         
         # Построение графика для общего количества миграций
         migrations_data = []
+        model_labels = []
         for model in models:
+            model_labels.append(model_names.get(model, model))
             if f"{model}_migrations" in migrations_df.columns:
                 migrations_data.append(migrations_df[f"{model}_migrations"].values[0])
             elif f"{model}_total" in migrations_df.columns:
@@ -100,15 +134,15 @@ def visualize_scenario_results(scenario_type):
         
         plt.xlabel('Модель миграции')
         plt.ylabel('Количество миграций')
-        plt.title(f'Количество миграций в сценарии "{scenario_type}"')
-        plt.xticks(bar_positions + bar_width, models)
+        plt.title(f'Количество миграций в сценарии "{scenario_names.get(scenario_type, scenario_type)}"')
+        plt.xticks(bar_positions + bar_width, model_labels)
         plt.legend()
         
         plt.tight_layout()
         plt.savefig(f"{scenario_type}_migrations.png", dpi=300)
         plt.close()
-    except:
-        print(f"Не удалось визуализировать данные о миграциях для сценария {scenario_type}")
+    except Exception as e:
+        print(f"Не удалось визуализировать данные о миграциях для сценария {scenario_type}: {e}")
 
 def visualize_all_scenarios():
     """Визуализация результатов для всех сценариев"""
@@ -122,6 +156,21 @@ def visualize_all_scenarios():
 
 def create_summary_graphs(scenarios):
     """Создание сводных графиков по всем сценариям"""
+    # Перевод типов сценариев
+    scenario_names = {
+        'critical': 'Критический',
+        'standard': 'Стандартный',
+        'mixed': 'Смешанный',
+        'dynamic': 'Динамический'
+    }
+    
+    # Перевод названий моделей
+    model_names = {
+        'threshold': 'Пороговая',
+        'qlearning': 'Q-обучение',
+        'hybrid': 'Гибридная'
+    }
+    
     # Сбор средних значений метрик
     avg_metrics = {
         'latency': {'threshold': [], 'qlearning': [], 'hybrid': []},
@@ -150,13 +199,16 @@ def create_summary_graphs(scenarios):
     bar_width = 0.25
     bar_positions = np.arange(len(scenarios))
     
+    scenario_labels = [scenario_names.get(s, s) for s in scenarios]
+    
     for i, model in enumerate(['threshold', 'qlearning', 'hybrid']):
-        plt.bar(bar_positions + i * bar_width, avg_metrics['latency'][model], width=bar_width, label=model)
+        label = model_names.get(model, model)
+        plt.bar(bar_positions + i * bar_width, avg_metrics['latency'][model], width=bar_width, label=label)
     
     plt.title('Средняя задержка по сценариям')
     plt.xlabel('Сценарий')
     plt.ylabel('Задержка (мс)')
-    plt.xticks(bar_positions + bar_width, scenarios)
+    plt.xticks(bar_positions + bar_width, scenario_labels)
     plt.legend()
     plt.grid(True)
     
@@ -164,12 +216,13 @@ def create_summary_graphs(scenarios):
     plt.subplot(3, 1, 2)
     
     for i, model in enumerate(['threshold', 'qlearning', 'hybrid']):
-        plt.bar(bar_positions + i * bar_width, avg_metrics['jitter'][model], width=bar_width, label=model)
+        label = model_names.get(model, model)
+        plt.bar(bar_positions + i * bar_width, avg_metrics['jitter'][model], width=bar_width, label=label)
     
     plt.title('Средний джиттер по сценариям')
     plt.xlabel('Сценарий')
     plt.ylabel('Джиттер (мс)')
-    plt.xticks(bar_positions + bar_width, scenarios)
+    plt.xticks(bar_positions + bar_width, scenario_labels)
     plt.legend()
     plt.grid(True)
     
@@ -177,12 +230,13 @@ def create_summary_graphs(scenarios):
     plt.subplot(3, 1, 3)
     
     for i, model in enumerate(['threshold', 'qlearning', 'hybrid']):
-        plt.bar(bar_positions + i * bar_width, avg_metrics['energy'][model], width=bar_width, label=model)
+        label = model_names.get(model, model)
+        plt.bar(bar_positions + i * bar_width, avg_metrics['energy'][model], width=bar_width, label=label)
     
     plt.title('Среднее энергопотребление по сценариям')
     plt.xlabel('Сценарий')
     plt.ylabel('Энергопотребление (Вт)')
-    plt.xticks(bar_positions + bar_width, scenarios)
+    plt.xticks(bar_positions + bar_width, scenario_labels)
     plt.legend()
     plt.grid(True)
     
@@ -216,12 +270,13 @@ def create_summary_graphs(scenarios):
     plt.figure(figsize=(10, 6))
     
     for i, model in enumerate(['threshold', 'qlearning', 'hybrid']):
-        plt.bar(bar_positions + i * bar_width, total_migrations[model], width=bar_width, label=model)
+        label = model_names.get(model, model)
+        plt.bar(bar_positions + i * bar_width, total_migrations[model], width=bar_width, label=label)
     
     plt.title('Общее количество миграций по сценариям')
     plt.xlabel('Сценарий')
     plt.ylabel('Количество миграций')
-    plt.xticks(bar_positions + bar_width, scenarios)
+    plt.xticks(bar_positions + bar_width, scenario_labels)
     plt.legend()
     plt.grid(True)
     
@@ -234,6 +289,29 @@ def create_comparative_table():
     scenarios = ['critical', 'standard', 'mixed', 'dynamic']
     models = ['threshold', 'qlearning', 'hybrid']
     metrics = ['latency', 'jitter', 'energy', 'migrations']
+    
+    # Перевод типов сценариев
+    scenario_names = {
+        'critical': 'Критический',
+        'standard': 'Стандартный',
+        'mixed': 'Смешанный',
+        'dynamic': 'Динамический'
+    }
+    
+    # Перевод названий моделей
+    model_names = {
+        'threshold': 'Пороговая',
+        'qlearning': 'Q-обучение',
+        'hybrid': 'Гибридная'
+    }
+    
+    # Перевод названий метрик
+    metric_names = {
+        'latency': 'Задержка',
+        'jitter': 'Джиттер',
+        'energy': 'Энергопотребление',
+        'migrations': 'Миграции'
+    }
     
     results = {scenario: {model: {} for model in models} for scenario in scenarios}
     
@@ -272,14 +350,16 @@ def create_comparative_table():
     
     for scenario in scenarios:
         for model in models:
-            row = {'Сценарий': scenario, 'Модель': model}
+            row = {'Сценарий': scenario_names.get(scenario, scenario), 
+                   'Модель': model_names.get(model, model)}
             
             for metric in metrics:
+                metric_name = metric_names.get(metric, metric)
                 if metric in results[scenario][model]:
-                    row[f'Среднее {metric}'] = results[scenario][model][metric]
+                    row[f'Среднее {metric_name}'] = results[scenario][model][metric]
                     
                     if f'{metric}_std' in results[scenario][model]:
-                        row[f'СКО {metric}'] = results[scenario][model][f'{metric}_std']
+                        row[f'СКО {metric_name}'] = results[scenario][model][f'{metric}_std']
             
             rows.append(row)
     

@@ -9,6 +9,9 @@ from threshold_model import ThresholdMarkovModel
 from qlearning_model import QLearningModel
 from hybrid_model import HybridModel
 
+# Настройка matplotlib для поддержки русского языка
+plt.rcParams['font.family'] = 'DejaVu Sans'
+
 # Константы
 NUM_NODES = 10
 NUM_SERVICES = 20

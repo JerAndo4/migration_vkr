@@ -1,17 +1,20 @@
 graph TD
-    A[Мониторинг метрик узлов] --> B{Превышение<br>порога?}
-    B -->|Нет| A
-    B -->|Да| C[Выбор сервиса<br>для миграции]
-    C --> D[Расчет вероятностей<br>переходов по<br>матрице]
-    D --> E[Выбор целевого<br>узла]
-    E --> F[Выполнение<br>миграции]
-    F --> G[Обновление<br>матрицы переходов]
+    A[Мониторинг метрик узлов] --> B{Превышение порога?}
+    B -- Нет --> A
+    B -- Да --> C[Выбор сервиса для миграции]
+    C --> D[Расчет вероятностей переходов по матрице]
+    D --> E[Выбор целевого узла]
+    E --> F[Выполнение миграции]
+    F --> G[Обновление матрицы переходов]
     G --> A
 
-    style A fill:#bbf,stroke:#333,stroke-width:1px
-    style B fill:#fbb,stroke:#333,stroke-width:1px
-    style C fill:#fdb,stroke:#333,stroke-width:1px
-    style D fill:#fdb,stroke:#333,stroke-width:1px
-    style E fill:#fdb,stroke:#333,stroke-width:1px
-    style F fill:#bfb,stroke:#333,stroke-width:1px
-    style G fill:#bbf,stroke:#333,stroke-width:1px
+    classDef default fill:white,stroke:black,stroke-width:1px,color:black;
+    classDef decision fill:#fbb,stroke:black,stroke-width:1px,color:black;
+    classDef process fill:#fdb,stroke:black,stroke-width:1px,color:black;
+    classDef data fill:#bbf,stroke:black,stroke-width:1px,color:black;
+    classDef action fill:#bfb,stroke:black,stroke-width:1px,color:black;
+    
+    class A,G data;
+    class B decision;
+    class C,D,E process;
+    class F action;
