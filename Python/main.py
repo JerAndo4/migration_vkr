@@ -1,62 +1,65 @@
-import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
-from test_scenarios import NetworkSimulator, run_all_scenarios
-from visualization import visualize_all_scenarios, create_comparative_table
-
-# Импорт моделей
-from threshold_model import ThresholdMarkovModel
+import os
+import time
+import sys
+from threshold_model import ThresholdModel
 from qlearning_model import QLearningModel
 from hybrid_model import HybridModel
+from test_scenarios import run_scenarios
+import plot_results
 
-# Настройка matplotlib для поддержки русского языка
-plt.rcParams['font.family'] = 'DejaVu Sans'
+def ensure_directories():
+    """Создает необходимые директории для результатов и графиков"""
+    os.makedirs('results', exist_ok=True)
+    os.makedirs('plots', exist_ok=True)
+    print("Директории для вывода результатов созданы.")
 
-# Константы
-NUM_NODES = 10
-NUM_SERVICES = 20
-SIMULATION_TIME = 1000
-
-def initialize_models():
-    """Инициализация моделей миграции"""
-    # Создание простых представлений узлов и сервисов для моделей
-    nodes = [{'id': i} for i in range(NUM_NODES)]
-    services = [{'id': i} for i in range(NUM_SERVICES)]
-    
-    # Инициализация моделей с одинаковыми параметрами
-    threshold_model = ThresholdMarkovModel(nodes, services, cpu_threshold=0.8, memory_threshold=0.8)
-    qlearning_model = QLearningModel(nodes, services, learning_rate=0.1, discount_factor=0.9, exploration_rate=0.1)
-    hybrid_model = HybridModel(
-        nodes, services, 
-        cpu_threshold=0.8, memory_threshold=0.8,
-        learning_rate=0.1, discount_factor=0.9, exploration_rate=0.1
-    )
-    
-    models = {
-        'threshold': threshold_model,
-        'qlearning': qlearning_model,
-        'hybrid': hybrid_model
-    }
-    
-    return models
+def print_header():
+    """Выводит информационное сообщение о запуске симуляции"""
+    print("=" * 80)
+    print(" АВТОМАТИЗИРОВАННЫЕ МОДЕЛИ МИГРАЦИИ В СЕТЯХ НОВОГО ПОКОЛЕНИЯ")
+    print(" Моделирование и анализ производительности")
+    print("=" * 80)
+    print("\n")
 
 def main():
-    """Основная функция тестирования"""
-    print("Инициализация моделей миграции...")
-    models = initialize_models()
+    """Основная функция запуска всего процесса моделирования и анализа"""
+    print_header()
     
-    print("Запуск тестирования на всех сценариях...")
-    results = run_all_scenarios(models)
+    # Подготовка окружения
+    ensure_directories()
     
-    print("Визуализация результатов...")
-    visualize_all_scenarios()
+    # Замеряем время выполнения
+    start_time = time.time()
     
-    print("Создание сравнительной таблицы...")
-    comparative_table = create_comparative_table()
+    # Запускаем все сценарии для всех моделей
+    print("Начало моделирования всех сценариев...")
+    run_scenarios()
     
-    print("Тестирование завершено. Результаты сохранены в файлы CSV и PNG.")
-    print("\nСравнительная таблица результатов:")
-    print(comparative_table)
+    # Генерируем графики и отчеты
+    print("\nГенерация графиков и визуализаций...")
+    plot_results.main()
+    
+    # Выводим общее время выполнения
+    elapsed_time = time.time() - start_time
+    print(f"\nВсе задачи выполнены за {elapsed_time:.2f} секунд.")
+    
+    print("\nРезультаты моделирования:")
+    print(f" - CSV-файлы сохранены в директории 'results/'")
+    print(f" - Графики сохранены в директории 'plots/'")
+    
+    print("\nДля детального анализа результатов рекомендуется изучить:")
+    print(" - График сравнения миграций: plots/all_models_migrations.png")
+    print(" - Графики задержки и джиттера для сценариев: plots/[scenario]_latency_jitter.png")
+    print(" - Графики энергопотребления для сценариев: plots/[scenario]_energy.png")
+    print(" - Сводную таблицу всех показателей: results/comparative_results.csv")
+    print("\nЗавершение работы.")
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\nПрерывание пользователем. Завершение работы.")
+        sys.exit(0)
+    except Exception as e:
+        print(f"\nОшибка при выполнении: {e}")
+        sys.exit(1)
