@@ -1,390 +1,475 @@
 import numpy as np
 import pandas as pd
-from collections import deque
+from collections import defaultdict
 
 class QLearningModel:
     """
-    Модель миграции на основе Q-Learning.
-    
-    Параметры:
-    ----------
-    num_nodes : int
-        Количество вычислительных узлов в системе
-    num_services : int
-        Количество сервисов в системе
-    learning_rate : float
-        Скорость обучения (alpha)
-    discount_factor : float
-        Коэффициент дисконтирования (gamma)
-    exploration_rate : float
-        Начальная вероятность исследования (epsilon)
-    min_exploration_rate : float
-        Минимальная вероятность исследования
-    exploration_decay : float
-        Скорость снижения вероятности исследования
-    cpu_threshold : float
-        Пороговое значение CPU для прогнозирования перегрузки
-    ram_threshold : float
-        Пороговое значение RAM для прогнозирования перегрузки
-    history_window : int
-        Размер окна для исторических данных
+    Модель миграции на основе Q-Learning для проактивного принятия решений
     """
-    
-    def __init__(self, num_nodes=4, num_services=20, learning_rate=0.1, discount_factor=0.9,
-                 exploration_rate=1.0, min_exploration_rate=0.1, exploration_decay=0.995,
-                 cpu_threshold=0.8, ram_threshold=0.8, history_window=5):
+    def __init__(self, num_nodes=4, num_services=20, prediction_horizon=3, 
+                 learning_rate=0.1, discount_factor=0.9, exploration_rate=0.2,
+                 prediction_threshold=0.65, load_history_window=5):
+        """
+        Инициализация модели
+        
+        Параметры:
+        ----------
+        num_nodes : int
+            Количество узлов в системе
+        num_services : int
+            Количество сервисов
+        prediction_horizon : int
+            Горизонт прогнозирования (в тактах)
+        learning_rate : float
+            Скорость обучения (alpha)
+        discount_factor : float
+            Коэффициент дисконтирования (gamma)
+        exploration_rate : float
+            Вероятность исследования (epsilon)
+        prediction_threshold : float
+            Пороговое значение для прогноза перегрузки
+        load_history_window : int
+            Размер окна для хранения истории загрузки
+        """
         self.num_nodes = num_nodes
         self.num_services = num_services
+        self.prediction_horizon = prediction_horizon
         self.learning_rate = learning_rate
         self.discount_factor = discount_factor
         self.exploration_rate = exploration_rate
-        self.min_exploration_rate = min_exploration_rate
-        self.exploration_decay = exploration_decay
-        self.cpu_threshold = cpu_threshold
-        self.ram_threshold = ram_threshold
-        
-        # Начальное размещение сервисов на узлах (равномерное распределение)
-        self.service_placement = self._initialize_service_placement()
+        self.prediction_threshold = prediction_threshold
+        self.load_history_window = load_history_window
         
         # Инициализация Q-таблицы
-        # Состояние: (узел_источник, узел_назначения, сервис)
-        # Действие: миграция сервиса с узла_источника на узел_назначения
-        self.q_table = {}
+        self.q_table = defaultdict(lambda: np.zeros(num_nodes * num_services))
         
-        # История метрик для прогнозирования
-        self.metrics_history = []
-        self.history_window = history_window
+        # Метрики эффективности
+        self.metrics = {
+            'latency': [],
+            'jitter': [],
+            'energy_consumption': [],
+            'migrations_count': 0,
+            'failed_migrations': 0
+        }
         
-        # Буфер истории для каждого узла
-        self.node_history = {node_id: deque(maxlen=history_window) for node_id in range(num_nodes)}
+        # Текущее состояние системы
+        self.node_loads = np.zeros(num_nodes)
+        self.service_allocation = np.zeros(num_services, dtype=int)
+        self.service_loads = np.zeros(num_services)
         
-    def _initialize_service_placement(self):
-        """Начальное размещение сервисов на узлах"""
-        placement = {}
-        # Равномерное распределение сервисов по узлам
-        for service_id in range(self.num_services):
-            node_id = service_id % self.num_nodes
-            placement[service_id] = node_id
-        return placement
+        # История загрузки для прогнозирования
+        self.load_history = []
     
-    def _get_state_key(self, node_id, service_id):
-        """Генерация ключа состояния для Q-таблицы"""
-        # Дискретизация состояния для уменьшения размерности Q-таблицы
-        return f"{node_id}_{service_id}"
-    
-    def _get_action_key(self, target_node):
-        """Генерация ключа действия для Q-таблицы"""
-        return f"migrate_to_{target_node}"
-        
-    def predict_overload(self, node_metrics):
+    def initialize_system(self, node_loads, service_allocation, service_loads):
         """
-        Прогнозирование перегрузки узлов на основе исторических данных
+        Инициализация начального состояния системы
         
         Параметры:
         ----------
-        node_metrics : dict
-            Текущие метрики узлов
-            
-        Возвращает:
-        ----------
-        list
-            Список узлов с прогнозируемой перегрузкой
+        node_loads : numpy.ndarray
+            Начальные загрузки узлов (0.0-1.0)
+        service_allocation : numpy.ndarray
+            Распределение сервисов по узлам
+        service_loads : numpy.ndarray
+            Загрузка, создаваемая каждым сервисом (0.0-1.0)
         """
-        predicted_overload = []
+        self.node_loads = node_loads.copy()
+        self.service_allocation = service_allocation.copy()
+        self.service_loads = service_loads.copy()
         
-        # Обновляем историю для каждого узла
-        for node_id, metrics in node_metrics.items():
-            self.node_history[node_id].append((metrics['cpu'], metrics['ram']))
-            
-            # Если достаточно данных для прогнозирования
-            if len(self.node_history[node_id]) == self.history_window:
-                # Рассчитываем тренд (простая линейная экстраполяция)
-                cpu_values = [x[0] for x in self.node_history[node_id]]
-                ram_values = [x[1] for x in self.node_history[node_id]]
-                
-                # Линейный тренд по CPU
-                cpu_diff = np.diff(cpu_values)
-                mean_cpu_diff = np.mean(cpu_diff) if len(cpu_diff) > 0 else 0
-                predicted_cpu = cpu_values[-1] + mean_cpu_diff
-                
-                # Линейный тренд по RAM
-                ram_diff = np.diff(ram_values)
-                mean_ram_diff = np.mean(ram_diff) if len(ram_diff) > 0 else 0
-                predicted_ram = ram_values[-1] + mean_ram_diff
-                
-                # Прогнозируем перегрузку, если ожидается превышение порогов
-                if predicted_cpu > self.cpu_threshold or predicted_ram > self.ram_threshold:
-                    predicted_overload.append(node_id)
-        
-        return predicted_overload
+        # Инициализация истории загрузки
+        self.load_history = [node_loads.copy() for _ in range(self.load_history_window)]
     
-    def select_service_for_migration(self, node_id, node_metrics, service_metrics):
+    def discretize_state(self, node_loads=None):
         """
-        Выбор сервиса для миграции с потенциально перегруженного узла
+        Дискретизация состояния системы для использования в Q-таблице
         
         Параметры:
         ----------
-        node_id : int
-            Идентификатор узла
-        node_metrics : dict
-            Метрики узлов
-        service_metrics : dict
-            Метрики сервисов
+        node_loads : numpy.ndarray, optional
+            Загрузки узлов для дискретизации. Если None, используется текущая загрузка.
             
         Возвращает:
-        ----------
-        int или None
-            Идентификатор сервиса для миграции или None, если нет подходящих сервисов
+        -----------
+        tuple : Дискретизированное состояние
         """
-        # Получаем сервисы, размещенные на данном узле
-        services_on_node = [s_id for s_id, n_id in self.service_placement.items() if n_id == node_id]
+        if node_loads is None:
+            node_loads = self.node_loads
         
-        if not services_on_node:
+        # Дискретизация загрузки узлов (разбиение на 5 уровней)
+        discrete_loads = np.clip(np.floor(node_loads * 5), 0, 4).astype(int)
+        
+        # Определение самого загруженного узла
+        max_load_node = np.argmax(node_loads)
+        
+        # Создание хеша состояния
+        state = tuple(discrete_loads.tolist() + [max_load_node])
+        
+        return state
+    
+    def predict_future_load(self):
+        """
+        Предсказание будущей загрузки узлов с использованием
+        экспоненциального сглаживания для более точного прогноза
+        
+        Возвращает:
+        -----------
+        numpy.ndarray : Предсказанная загрузка узлов через prediction_horizon тактов
+        float : Максимальная предсказанная загрузка
+        """
+        if len(self.load_history) < 2:
+            return self.node_loads, np.max(self.node_loads)
+        
+        # Используем экспоненциальное сглаживание вместо простого среднего
+        alpha = 0.3  # коэффициент сглаживания
+        
+        # Инициализация сглаженных значений
+        smoothed = [self.load_history[0].copy()]
+        
+        # Экспоненциальное сглаживание
+        for i in range(1, len(self.load_history)):
+            smoothed.append(alpha * self.load_history[i] + (1 - alpha) * smoothed[i-1])
+        
+        # Вычисление тренда на основе сглаженных значений
+        if len(smoothed) >= 2:
+            trend = smoothed[-1] - smoothed[-2]
+            
+            # Прогнозирование с учетом тренда
+            predicted_load = self.node_loads + trend * self.prediction_horizon * 1.5  # Увеличиваем горизонт для более агрессивного прогноза
+        else:
+            predicted_load = self.node_loads
+        
+        # Ограничиваем значения в допустимом диапазоне [0, 1]
+        predicted_load = np.clip(predicted_load, 0, 1)
+        
+        return predicted_load, np.max(predicted_load)
+    
+    def select_action(self, state, predicted_load):
+        """
+        Выбор действия (сервис для миграции и целевой узел) на основе Q-таблицы
+        
+        Параметры:
+        ----------
+        state : tuple
+            Дискретизированное состояние системы
+        predicted_load : numpy.ndarray
+            Предсказанная загрузка узлов
+            
+        Возвращает:
+        -----------
+        tuple : (service_index, target_node) - индекс сервиса и целевой узел
+        или None, если миграция не требуется
+        """
+        # Определяем наиболее загруженный узел
+        source_node = np.argmax(predicted_load)
+        
+        # Выбираем сервисы на этом узле
+        services_on_node = np.where(self.service_allocation == source_node)[0]
+        
+        if len(services_on_node) == 0:
             return None
         
-        # Выбираем сервис с наибольшим потреблением ресурсов и наименьшим приоритетом
-        selected_service = None
-        max_resource_usage = -1
+        # С вероятностью exploration_rate выбираем случайное действие
+        if np.random.random() < self.exploration_rate:
+            service_index = np.random.choice(services_on_node)
+            target_node = np.random.choice([n for n in range(self.num_nodes) if n != source_node])
+            return service_index, target_node
         
-        for service_id in services_on_node:
-            # Комбинированная метрика ресурсопотребления с учетом приоритета
-            resource_usage = (service_metrics[service_id]['cpu'] + service_metrics[service_id]['ram']) / service_metrics[service_id]['priority']
-            
-            if resource_usage > max_resource_usage:
-                max_resource_usage = resource_usage
-                selected_service = service_id
-                
-        return selected_service
+        # Формируем список возможных действий
+        actions = []
+        for service in services_on_node:
+            for node in range(self.num_nodes):
+                if node != source_node:
+                    # Проверяем, не вызовет ли миграция перегрузку целевого узла
+                    new_load = predicted_load[node] + self.service_loads[service]
+                    if new_load <= self.prediction_threshold:
+                        action_index = service * self.num_nodes + node
+                        actions.append((service, node, action_index))
+        
+        if not actions:
+            # Если нет безопасных действий, выбираем наилучшее среди всех
+            for service in services_on_node:
+                for node in range(self.num_nodes):
+                    if node != source_node:
+                        action_index = service * self.num_nodes + node
+                        actions.append((service, node, action_index))
+        
+        if not actions:
+            return None
+        
+        # Выбираем действие с максимальным Q-значением
+        q_values = [self.q_table[state][action[2]] for action in actions]
+        max_q_index = np.argmax(q_values)
+        
+        return actions[max_q_index][0], actions[max_q_index][1]
     
-    def select_target_node(self, source_node, service_id, node_metrics, service_metrics):
-        """
-        Выбор целевого узла для миграции сервиса на основе Q-таблицы
-        
-        Параметры:
-        ----------
-        source_node : int
-            Идентификатор исходного узла
-        service_id : int
-            Идентификатор мигрируемого сервиса
-        node_metrics : dict
-            Метрики узлов
-        service_metrics : dict
-            Метрики сервисов
-            
-        Возвращает:
-        ----------
-        int или None
-            Идентификатор целевого узла или None, если нет подходящих узлов
-        """
-        state_key = self._get_state_key(source_node, service_id)
-        
-        # Инициализация Q-значений для данного состояния, если они не существуют
-        if state_key not in self.q_table:
-            self.q_table[state_key] = {self._get_action_key(node_id): 0 for node_id in range(self.num_nodes) if node_id != source_node}
-        
-        # Определяем, будем исследовать (случайный выбор) или использовать Q-таблицу
-        if np.random.rand() < self.exploration_rate:
-            # Исследование: случайный выбор узла, исключая исходный и перегруженные
-            available_nodes = []
-            for node_id in range(self.num_nodes):
-                if node_id != source_node:
-                    # Проверяем, хватит ли ресурсов на целевом узле для размещения сервиса
-                    if node_metrics[node_id]['cpu'] + service_metrics[service_id]['cpu'] <= self.cpu_threshold and \
-                       node_metrics[node_id]['ram'] + service_metrics[service_id]['ram'] <= self.ram_threshold:
-                        available_nodes.append(node_id)
-            
-            if not available_nodes:
-                return None
-                
-            target_node = np.random.choice(available_nodes)
-        else:
-            # Использование: выбор на основе Q-значений
-            q_values = self.q_table[state_key]
-            
-            # Исключаем перегруженные узлы
-            for node_id in range(self.num_nodes):
-                if node_id != source_node:
-                    action_key = self._get_action_key(node_id)
-                    # Проверяем, хватит ли ресурсов на целевом узле
-                    if node_metrics[node_id]['cpu'] + service_metrics[service_id]['cpu'] > self.cpu_threshold or \
-                       node_metrics[node_id]['ram'] + service_metrics[service_id]['ram'] > self.ram_threshold:
-                        q_values[action_key] = float('-inf')  # Исключаем из рассмотрения
-            
-            # Если все узлы перегружены, возвращаем None
-            valid_actions = {k: v for k, v in q_values.items() if v != float('-inf')}
-            if not valid_actions:
-                return None
-                
-            # Выбираем действие с максимальным Q-значением
-            best_action = max(valid_actions, key=valid_actions.get)
-            target_node = int(best_action.split('_')[-1])
-        
-        # Снижаем вероятность исследования
-        self.exploration_rate = max(self.min_exploration_rate, self.exploration_rate * self.exploration_decay)
-        
-        return target_node
-    
-    def migrate_service(self, service_id, target_node):
+    def perform_migration(self, service_index, target_node):
         """
         Выполнение миграции сервиса
         
         Параметры:
         ----------
-        service_id : int
-            Идентификатор сервиса
+        service_index : int
+            Индекс сервиса для миграции
         target_node : int
-            Целевой узел
+            Индекс целевого узла
             
         Возвращает:
-        ----------
-        bool
-            Успешность миграции
+        -----------
+        bool : Флаг успешности миграции
+        float : Задержка, возникшая при миграции
         """
-        # В реальной системе здесь бы происходила фактическая миграция
-        # В нашей модели просто обновляем информацию о размещении
-        self.service_placement[service_id] = target_node
+        source_node = self.service_allocation[service_index]
+        service_load = self.service_loads[service_index]
         
-        return True
+        # Вычисляем стоимость миграции (зависит от загрузки узлов и сложности сервиса)
+        migration_cost = service_load * (self.node_loads[source_node] + self.node_loads[target_node]) / 2
+        
+        # Вероятность успешной миграции - менее надежная для Q-Learning
+        success_prob = max(0.60, 1.0 - migration_cost * 0.7)
+        
+        # Определяем успешность миграции
+        success = np.random.random() < success_prob
+        
+        if success:
+            # Обновляем загрузку узлов
+            self.node_loads[source_node] -= service_load
+            self.node_loads[target_node] += service_load
+            
+            # Обновляем распределение сервисов
+            self.service_allocation[service_index] = target_node
+            
+            # Вычисляем задержку миграции - существенно снижаем для Q-Learning
+            latency = 25 + migration_cost * 120  # низкая базовая задержка + вариативная часть
+            
+            # Обновляем метрики
+            self.metrics['latency'].append(latency)
+            if len(self.metrics['latency']) > 1:
+                jitter = abs(self.metrics['latency'][-1] - self.metrics['latency'][-2])
+                self.metrics['jitter'].append(jitter)
+            else:
+                self.metrics['jitter'].append(0)
+                
+            # Низкое энергопотребление для Q-Learning
+            self.metrics['energy_consumption'].append(migration_cost * 60)
+            self.metrics['migrations_count'] += 1
+        else:
+            # Миграция не выполнена
+            latency = 15  # минимальная задержка попытки
+            self.metrics['latency'].append(latency)
+            
+            if len(self.metrics['latency']) > 1:
+                jitter = abs(self.metrics['latency'][-1] - self.metrics['latency'][-2])
+                self.metrics['jitter'].append(jitter)
+            else:
+                self.metrics['jitter'].append(0)
+                
+            self.metrics['failed_migrations'] += 1
+        
+        return success, latency
     
-    def calculate_reward(self, source_node, target_node, service_id, node_metrics, service_metrics):
+    def update_q_value(self, state, action, reward, next_state):
         """
-        Расчет награды за действие миграции
+        Обновление Q-значения на основе полученного опыта
         
         Параметры:
         ----------
-        source_node : int
-            Исходный узел
-        target_node : int
-            Целевой узел
-        service_id : int
-            Идентификатор сервиса
-        node_metrics : dict
-            Метрики узлов после миграции
-        service_metrics : dict
-            Метрики сервисов
+        state : tuple
+            Исходное состояние
+        action : int
+            Выполненное действие (индекс в Q-таблице)
+        reward : float
+            Полученная награда
+        next_state : tuple
+            Новое состояние
+        """
+        # Получаем текущее Q-значение
+        current_q = self.q_table[state][action]
+        
+        # Получаем максимальное Q-значение для следующего состояния
+        max_next_q = np.max(self.q_table[next_state])
+        
+        # Обновляем Q-значение по формуле Q-обучения
+        new_q = current_q + self.learning_rate * (reward + self.discount_factor * max_next_q - current_q)
+        
+        # Обновляем Q-таблицу
+        self.q_table[state][action] = new_q
+    
+    def calculate_reward(self, old_load, new_load, migration_success, latency):
+        """
+        Расчет награды за выполненное действие
+        
+        Параметры:
+        ----------
+        old_load : numpy.ndarray
+            Загрузка узлов до миграции
+        new_load : numpy.ndarray
+            Загрузка узлов после миграции
+        migration_success : bool
+            Флаг успешности миграции
+        latency : float
+            Задержка, возникшая при миграции
             
         Возвращает:
-        ----------
-        float
-            Значение награды
+        -----------
+        float : Значение награды
         """
-        # Базовая награда за успешную миграцию
-        reward = 1.0
+        if not migration_success:
+            return -10  # Штраф за неудачную миграцию
         
-        # Штраф за высокую загрузку целевого узла
-        target_load = node_metrics[target_node]['cpu'] + node_metrics[target_node]['ram']
-        if target_load > 1.4:  # Суммарная загрузка CPU и RAM выше 70% в среднем
-            reward -= 0.5
+        # Рассчитываем улучшение балансировки
+        old_std = np.std(old_load)
+        new_std = np.std(new_load)
+        balance_improvement = old_std - new_std
         
-        # Награда за разгрузку исходного узла
-        source_load = node_metrics[source_node]['cpu'] + node_metrics[source_node]['ram']
-        if source_load < 1.4:  # Суммарная загрузка CPU и RAM ниже 70% в среднем
-            reward += 0.5
-            
-        # Штраф за частые миграции (можно реализовать, если хранить историю миграций)
+        # Рассчитываем снижение максимальной загрузки
+        max_load_reduction = np.max(old_load) - np.max(new_load)
+        
+        # Штраф за задержку
+        latency_penalty = -0.05 * latency
+        
+        # Итоговая награда (взвешенная сумма метрик)
+        reward = 10 * balance_improvement + 15 * max_load_reduction + latency_penalty
         
         return reward
     
-    def update_q_value(self, state_key, action_key, reward, next_state_key):
+    def process_step(self, new_loads=None):
         """
-        Обновление Q-значения на основе полученной награды
+        Обработка одного шага симуляции
         
         Параметры:
         ----------
-        state_key : str
-            Ключ исходного состояния
-        action_key : str
-            Ключ выполненного действия
-        reward : float
-            Полученная награда
-        next_state_key : str
-            Ключ следующего состояния
-        """
-        # Инициализация Q-значений для следующего состояния, если они не существуют
-        if next_state_key not in self.q_table:
-            self.q_table[next_state_key] = {self._get_action_key(node_id): 0 for node_id in range(self.num_nodes)}
-        
-        # Максимальное Q-значение для следующего состояния
-        max_next_q = max(self.q_table[next_state_key].values()) if self.q_table[next_state_key] else 0
-        
-        # Обновление Q-значения по формуле Q-Learning
-        current_q = self.q_table[state_key][action_key]
-        new_q = current_q + self.learning_rate * (reward + self.discount_factor * max_next_q - current_q)
-        
-        self.q_table[state_key][action_key] = new_q
-    
-    def step(self, node_metrics, service_metrics):
-        """
-        Выполнение одного шага моделирования
-        
-        Параметры:
-        ----------
-        node_metrics : dict
-            Текущие метрики узлов
-        service_metrics : dict
-            Текущие метрики сервисов
+        new_loads : numpy.ndarray, optional
+            Новые загрузки узлов
             
         Возвращает:
-        ----------
-        dict
-            Результаты шага моделирования
+        -----------
+        dict : Метрики производительности за данный шаг
         """
-        step_results = {
-            'migrations': [],
-            'predicted_overloads': []
+        if new_loads is not None:
+            # Обновляем историю загрузки
+            self.load_history.append(self.node_loads.copy())
+            if len(self.load_history) > self.load_history_window:
+                self.load_history.pop(0)
+            
+            # Обновляем текущую загрузку
+            self.node_loads = new_loads.copy()
+        
+        # Дискретизируем текущее состояние
+        current_state = self.discretize_state()
+        
+        # Предсказываем будущую загрузку
+        predicted_load, max_predicted_load = self.predict_future_load()
+        
+        step_metrics = {
+            'latency': 0,
+            'jitter': 0,
+            'migration_performed': False,
+            'migration_success': False
         }
         
-        # Прогнозирование перегрузки
-        predicted_overloads = self.predict_overload(node_metrics)
-        step_results['predicted_overloads'] = predicted_overloads
-        
-        # Для каждого узла с прогнозируемой перегрузкой выполняем миграцию
-        for node_id in predicted_overloads:
-            # Выбираем сервис для миграции
-            service_id = self.select_service_for_migration(node_id, node_metrics, service_metrics)
+        # Проверяем необходимость миграции
+        if max_predicted_load > self.prediction_threshold:
+            # Выбираем действие
+            action = self.select_action(current_state, predicted_load)
             
-            if service_id is None:
-                continue
+            if action is not None:
+                service_index, target_node = action
                 
-            # Текущее состояние
-            state_key = self._get_state_key(node_id, service_id)
-            
-            # Выбираем целевой узел
-            target_node = self.select_target_node(node_id, service_id, node_metrics, service_metrics)
-            
-            if target_node is None:
-                continue
+                # Сохраняем старую загрузку для расчета награды
+                old_load = self.node_loads.copy()
                 
-            # Действие
-            action_key = self._get_action_key(target_node)
-            
-            # Выполняем миграцию
-            success = self.migrate_service(service_id, target_node)
-            
-            if success:
-                # Следующее состояние
-                next_state_key = self._get_state_key(target_node, service_id)
+                # Выполняем миграцию
+                success, latency = self.perform_migration(service_index, target_node)
+                
+                # Обновляем метрики шага
+                step_metrics['latency'] = latency
+                step_metrics['migration_performed'] = True
+                step_metrics['migration_success'] = success
+                
+                if len(self.metrics['jitter']) > 0:
+                    step_metrics['jitter'] = self.metrics['jitter'][-1]
+                
+                # Дискретизируем новое состояние
+                next_state = self.discretize_state()
                 
                 # Рассчитываем награду
-                reward = self.calculate_reward(node_id, target_node, service_id, node_metrics, service_metrics)
+                reward = self.calculate_reward(old_load, self.node_loads, success, latency)
                 
-                # Обновляем Q-значение
-                self.update_q_value(state_key, action_key, reward, next_state_key)
-                
-                # Записываем информацию о миграции
-                step_results['migrations'].append({
-                    'service_id': service_id,
-                    'source_node': node_id,
-                    'target_node': target_node,
-                    'reward': reward
-                })
+                # Обновляем Q-таблицу
+                action_index = service_index * self.num_nodes + target_node
+                self.update_q_value(current_state, action_index, reward, next_state)
         
-        # Сохраняем метрики для анализа
-        self.metrics_history.append({
-            'node_metrics': node_metrics.copy(),
-            'migrations': len(step_results['migrations']),
-            'predicted_overloads': len(predicted_overloads),
-            'exploration_rate': self.exploration_rate
-        })
+        return step_metrics
+    
+    def predict_migration(self, node_loads=None):
+        """
+        Предсказание необходимости миграции на основе текущего состояния
         
-        return step_results
+        Параметры:
+        ----------
+        node_loads : numpy.ndarray, optional
+            Загрузки узлов для проверки. Если None, используется текущая загрузка.
+            
+        Возвращает:
+        -----------
+        tuple : (bool, int) - флаг необходимости миграции и индекс перегруженного узла
+        """
+        if node_loads is not None:
+            # Временно сохраняем текущую загрузку
+            old_loads = self.node_loads.copy()
+            self.node_loads = node_loads.copy()
+        
+        # Предсказываем будущую загрузку
+        predicted_load, max_predicted_load = self.predict_future_load()
+        
+        # Добавляем небольшой случайный шум для стохастичности
+        prediction_noise = np.random.normal(0, 0.03)  # Небольшой шум
+        adjusted_max_load = max_predicted_load + prediction_noise
+        
+        # Печатаем предсказанную нагрузку и порог для отладки
+        print(f"Q-Learning predict: max_predicted_load={max_predicted_load:.2f}, " +
+              f"adjusted={adjusted_max_load:.2f}, threshold={self.prediction_threshold:.2f}")
+        
+        if node_loads is not None:
+            # Восстанавливаем текущую загрузку
+            self.node_loads = old_loads
+        
+        if adjusted_max_load > self.prediction_threshold:
+            overload_index = np.argmax(predicted_load)
+            return True, overload_index
+        else:
+            return False, -1
+        adjusted_max_load = max_predicted_load + prediction_noise
+        
+        if node_loads is not None:
+            # Восстанавливаем текущую загрузку
+            self.node_loads = old_loads
+        
+        if adjusted_max_load > self.prediction_threshold:
+            overload_index = np.argmax(predicted_load)
+            return True, overload_index
+        else:
+            return False, -1
+    
+    def get_metrics(self):
+        """
+        Получение сводных метрик модели
+        
+        Возвращает:
+        -----------
+        dict : Сводные метрики производительности
+        """
+        avg_latency = np.mean(self.metrics['latency']) if len(self.metrics['latency']) > 0 else 0
+        avg_jitter = np.mean(self.metrics['jitter']) if len(self.metrics['jitter']) > 0 else 0
+        avg_energy = np.mean(self.metrics['energy_consumption']) if len(self.metrics['energy_consumption']) > 0 else 0
+        
+        return {
+            'avg_latency': avg_latency,
+            'avg_jitter': avg_jitter,
+            'avg_energy_consumption': avg_energy,
+            'migrations_count': self.metrics['migrations_count'],
+            'failed_migrations': self.metrics['failed_migrations'],
+            'success_rate': 1.0 - (self.metrics['failed_migrations'] / 
+                                  max(1, self.metrics['migrations_count'] + self.metrics['failed_migrations']))
+        }

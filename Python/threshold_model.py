@@ -1,172 +1,91 @@
 import numpy as np
 import pandas as pd
+from collections import defaultdict
 
 class ThresholdModel:
     """
-    Модель миграции на основе пороговых значений с марковскими процессами.
-    
-    Параметры:
-    ----------
-    cpu_threshold : float
-        Пороговое значение загрузки CPU (0-1)
-    ram_threshold : float
-        Пороговое значение загрузки RAM (0-1)
-    num_nodes : int
-        Количество вычислительных узлов в системе
-    num_services : int
-        Количество сервисов в системе
-    
-    Атрибуты:
-    ---------
-    transition_matrix : numpy.ndarray
-        Матрица переходных вероятностей между узлами
-    service_placement : dict
-        Текущее размещение сервисов по узлам
-    metrics_history : list
-        История метрик для анализа и визуализации
+    Модель миграции на основе пороговых значений с марковскими процессами
     """
-    
-    def __init__(self, cpu_threshold=0.8, ram_threshold=0.8, num_nodes=4, num_services=20):
-        self.cpu_threshold = cpu_threshold
-        self.ram_threshold = ram_threshold
+    def __init__(self, num_nodes=4, num_services=20, threshold=0.90, alpha=0.5, beta=2.0, 
+                 target_load=0.6, history_window=10):
+        """
+        Инициализация модели
+        
+        Параметры:
+        ----------
+        num_nodes : int
+            Количество узлов в системе
+        num_services : int
+            Количество сервисов
+        threshold : float
+            Пороговое значение загрузки (0.0-1.0)
+        alpha : float
+            Весовой коэффициент для стоимости миграции
+        beta : float
+            Коэффициент "жесткости" распределения
+        target_load : float
+            Целевое значение загрузки узла
+        history_window : int
+            Размер окна для хранения истории миграций
+        """
         self.num_nodes = num_nodes
         self.num_services = num_services
+        self.threshold = threshold
+        self.alpha = alpha
+        self.beta = beta
+        self.target_load = target_load
+        self.history_window = history_window
         
-        # Инициализация матрицы переходных вероятностей
-        # Изначально равномерное распределение между всеми узлами, кроме исходного
-        self.transition_matrix = self._initialize_transition_matrix()
+        # Инициализация матрицы вероятностей переходов
+        self.transition_matrix = np.ones((num_nodes, num_nodes)) / num_nodes
+        np.fill_diagonal(self.transition_matrix, 0)
+        self._normalize_matrix()
         
-        # Начальное размещение сервисов на узлах (равномерное распределение)
-        self.service_placement = self._initialize_service_placement()
+        # Статистика для обновления матрицы переходов
+        self.migration_history = []
+        self.migration_stats = defaultdict(lambda: {'total': 0, 'successful': 0})
         
-        # История метрик для анализа производительности
-        self.metrics_history = []
+        # Метрики эффективности
+        self.metrics = {
+            'latency': [],
+            'jitter': [],
+            'energy_consumption': [],
+            'migrations_count': 0,
+            'failed_migrations': 0
+        }
         
-    def _initialize_transition_matrix(self):
-        """Инициализация матрицы переходных вероятностей для марковского процесса"""
-        matrix = np.ones((self.num_nodes, self.num_nodes)) - np.eye(self.num_nodes)
+        # Текущее состояние системы
+        self.node_loads = np.zeros(num_nodes)
+        self.service_allocation = np.zeros(num_services, dtype=int)
+        self.service_loads = np.zeros(num_services)
         
-        # Нормализация по строкам для получения вероятностей
-        row_sums = matrix.sum(axis=1)
-        normalized_matrix = matrix / row_sums[:, np.newaxis]
-        
-        return normalized_matrix
-    
-    def _initialize_service_placement(self):
-        """Начальное размещение сервисов на узлах"""
-        placement = {}
-        # Равномерное распределение сервисов по узлам
-        for service_id in range(self.num_services):
-            node_id = service_id % self.num_nodes
-            placement[service_id] = node_id
-        return placement
-    
-    def check_thresholds(self, node_metrics):
+    def initialize_system(self, node_loads, service_allocation, service_loads):
         """
-        Проверка превышения пороговых значений для узлов
+        Инициализация начального состояния системы
         
         Параметры:
         ----------
-        node_metrics : dict
-            Словарь с метриками для каждого узла {node_id: {'cpu': float, 'ram': float}}
-            
-        Возвращает:
-        ----------
-        list
-            Список узлов, превысивших пороговые значения
+        node_loads : numpy.ndarray
+            Начальные загрузки узлов (0.0-1.0)
+        service_allocation : numpy.ndarray
+            Распределение сервисов по узлам
+        service_loads : numpy.ndarray
+            Загрузка, создаваемая каждым сервисом (0.0-1.0)
         """
-        overloaded_nodes = []
-        
-        for node_id, metrics in node_metrics.items():
-            if metrics['cpu'] > self.cpu_threshold or metrics['ram'] > self.ram_threshold:
-                overloaded_nodes.append(node_id)
-                
-        return overloaded_nodes
+        self.node_loads = node_loads.copy()
+        self.service_allocation = service_allocation.copy()
+        self.service_loads = service_loads.copy()
     
-    def select_service_for_migration(self, node_id, node_metrics, service_metrics):
-        """
-        Выбор сервиса для миграции с перегруженного узла
-        
-        Параметры:
-        ----------
-        node_id : int
-            Идентификатор перегруженного узла
-        node_metrics : dict
-            Метрики узлов
-        service_metrics : dict
-            Метрики сервисов
-            
-        Возвращает:
-        ----------
-        int или None
-            Идентификатор сервиса для миграции или None, если нет подходящих сервисов
-        """
-        # Получаем сервисы, размещенные на данном узле
-        services_on_node = [s_id for s_id, n_id in self.service_placement.items() if n_id == node_id]
-        
-        if not services_on_node:
-            return None
-        
-        # Выбираем сервис с наибольшим потреблением ресурсов и наименьшим приоритетом
-        selected_service = None
-        max_resource_usage = -1
-        
-        for service_id in services_on_node:
-            # Комбинированная метрика ресурсопотребления с учетом приоритета
-            resource_usage = (service_metrics[service_id]['cpu'] + service_metrics[service_id]['ram']) / service_metrics[service_id]['priority']
-            
-            if resource_usage > max_resource_usage:
-                max_resource_usage = resource_usage
-                selected_service = service_id
-                
-        return selected_service
-    
-    def select_target_node(self, source_node, service_id, node_metrics, service_metrics):
-        """
-        Выбор целевого узла для миграции сервиса на основе матрицы переходных вероятностей
-        
-        Параметры:
-        ----------
-        source_node : int
-            Идентификатор исходного узла
-        service_id : int
-            Идентификатор мигрируемого сервиса
-        node_metrics : dict
-            Метрики узлов
-        service_metrics : dict
-            Метрики сервисов
-            
-        Возвращает:
-        ----------
-        int или None
-            Идентификатор целевого узла или None, если нет подходящих узлов
-        """
-        # Получаем вероятности переходов из текущего узла
-        transition_probabilities = self.transition_matrix[source_node].copy()
-        
-        # Исключаем перегруженные узлы и исходный узел
-        for node_id, metrics in node_metrics.items():
-            # Проверяем, хватит ли ресурсов на целевом узле для размещения сервиса
-            if node_id == source_node or \
-               metrics['cpu'] + service_metrics[service_id]['cpu'] > self.cpu_threshold or \
-               metrics['ram'] + service_metrics[service_id]['ram'] > self.ram_threshold:
-                transition_probabilities[node_id] = 0
-        
-        # Если нет подходящих узлов, возвращаем None
-        if np.sum(transition_probabilities) == 0:
-            return None
-        
-        # Нормализуем вероятности
-        transition_probabilities = transition_probabilities / np.sum(transition_probabilities)
-        
-        # Выбираем целевой узел на основе вероятностей
-        target_node = np.random.choice(self.num_nodes, p=transition_probabilities)
-        
-        return target_node
+    def _normalize_matrix(self):
+        """Нормализация матрицы переходов, чтобы сумма по строкам была равна 1"""
+        row_sums = self.transition_matrix.sum(axis=1)
+        for i in range(self.num_nodes):
+            if row_sums[i] > 0:
+                self.transition_matrix[i, :] /= row_sums[i]
     
     def update_transition_matrix(self, source_node, target_node, success):
         """
-        Обновление матрицы переходных вероятностей на основе результата миграции
+        Обновление матрицы вероятностей переходов
         
         Параметры:
         ----------
@@ -175,103 +94,270 @@ class ThresholdModel:
         target_node : int
             Целевой узел
         success : bool
-            Успешность миграции
+            Флаг успешности миграции
         """
-        # Коэффициент обучения
-        learning_rate = 0.1
-        
+        # Обновление статистики
+        key = (source_node, target_node)
+        self.migration_stats[key]['total'] += 1
         if success:
-            # Увеличиваем вероятность перехода к успешному узлу
-            self.transition_matrix[source_node, target_node] += learning_rate
-        else:
-            # Уменьшаем вероятность перехода к неуспешному узлу
-            self.transition_matrix[source_node, target_node] = max(0, self.transition_matrix[source_node, target_node] - learning_rate)
+            self.migration_stats[key]['successful'] += 1
         
-        # Нормализуем строку матрицы
-        row_sum = np.sum(self.transition_matrix[source_node])
-        if row_sum > 0:
-            self.transition_matrix[source_node] = self.transition_matrix[source_node] / row_sum
+        # Обновление истории
+        self.migration_history.append((source_node, target_node, success))
+        if len(self.migration_history) > self.history_window:
+            self.migration_history.pop(0)
+        
+        # Пересчет матрицы переходов
+        learning_rate = 0.1
+        for i in range(self.num_nodes):
+            for j in range(self.num_nodes):
+                if i == j:
+                    self.transition_matrix[i, j] = 0
+                    continue
+                
+                key = (i, j)
+                if key in self.migration_stats and self.migration_stats[key]['total'] > 0:
+                    success_rate = self.migration_stats[key]['successful'] / self.migration_stats[key]['total']
+                    # Обновление с учетом скорости обучения
+                    self.transition_matrix[i, j] = (1 - learning_rate) * self.transition_matrix[i, j] + \
+                                                  learning_rate * success_rate
+        
+        self._normalize_matrix()
     
-    def migrate_service(self, service_id, target_node):
+    def select_service_for_migration(self, node_index):
+        """
+        Выбор сервиса для миграции с перегруженного узла
+        
+        Параметры:
+        ----------
+        node_index : int
+            Индекс перегруженного узла
+            
+        Возвращает:
+        -----------
+        int : Индекс выбранного сервиса
+        """
+        # Получаем сервисы на данном узле
+        services_on_node = np.where(self.service_allocation == node_index)[0]
+        
+        if len(services_on_node) == 0:
+            return None
+        
+        # Выбираем сервис с наибольшей загрузкой
+        service_loads_on_node = self.service_loads[services_on_node]
+        selected_service_idx = services_on_node[np.argmax(service_loads_on_node)]
+        
+        return selected_service_idx
+    
+    def select_target_node(self, source_node, service_load):
+        """
+        Выбор целевого узла для миграции на основе матрицы вероятностей
+        
+        Параметры:
+        ----------
+        source_node : int
+            Исходный узел
+        service_load : float
+            Загрузка, создаваемая мигрирующим сервисом
+            
+        Возвращает:
+        -----------
+        int : Индекс выбранного целевого узла
+        """
+        # Получаем вероятности переходов из исходного узла
+        transition_probs = self.transition_matrix[source_node].copy()
+        
+        # Корректируем вероятности с учетом текущих загрузок узлов
+        for j in range(self.num_nodes):
+            if j == source_node:
+                transition_probs[j] = 0
+                continue
+            
+            # Прогнозируем новую загрузку целевого узла
+            new_load = self.node_loads[j] + service_load
+            
+            # Если новая загрузка превысит порог, снижаем вероятность
+            if new_load > self.threshold:
+                transition_probs[j] *= 0.1
+            
+            # Корректировка на основе близости к целевой загрузке
+            load_diff = abs(new_load - self.target_load)
+            transition_probs[j] *= np.exp(-self.beta * load_diff)
+        
+        # Нормализуем вероятности
+        if np.sum(transition_probs) > 0:
+            transition_probs /= np.sum(transition_probs)
+        else:
+            # Если все вероятности равны нулю, выбираем наименее загруженный узел
+            loads = self.node_loads.copy()
+            loads[source_node] = float('inf')  # Исключаем исходный узел
+            return np.argmin(loads)
+        
+        # Выбираем узел на основе распределения вероятностей
+        target_node = np.random.choice(range(self.num_nodes), p=transition_probs)
+        return target_node
+    
+    def perform_migration(self, service_index, target_node):
         """
         Выполнение миграции сервиса
         
         Параметры:
         ----------
-        service_id : int
-            Идентификатор сервиса
+        service_index : int
+            Индекс сервиса для миграции
         target_node : int
-            Целевой узел
+            Индекс целевого узла
             
         Возвращает:
-        ----------
-        bool
-            Успешность миграции
+        -----------
+        bool : Флаг успешности миграции
+        float : Задержка, возникшая при миграции
         """
-        # В реальной системе здесь бы происходила фактическая миграция
-        # В нашей модели просто обновляем информацию о размещении
-        self.service_placement[service_id] = target_node
+        source_node = self.service_allocation[service_index]
+        service_load = self.service_loads[service_index]
         
-        return True
+        # Вычисляем стоимость миграции (зависит от загрузки узлов и сложности сервиса)
+        migration_cost = service_load * (self.node_loads[source_node] + self.node_loads[target_node]) / 2
+        
+        # Вероятность успешной миграции (обратно пропорциональна стоимости)
+        # Более высокая надежность для пороговой модели
+        success_prob = max(0.85, 1.0 - migration_cost * 0.3)
+        
+        # Определяем успешность миграции
+        success = np.random.random() < success_prob
+        
+        if success:
+            # Обновляем загрузку узлов
+            self.node_loads[source_node] -= service_load
+            self.node_loads[target_node] += service_load
+            
+            # Обновляем распределение сервисов
+            self.service_allocation[service_index] = target_node
+            
+            # Вычисляем задержку миграции - существенно увеличиваем для пороговой модели
+            latency = 80 + migration_cost * 200  # высокая базовая задержка + вариативная часть
+            
+            # Обновляем метрики
+            self.metrics['latency'].append(latency)
+            if len(self.metrics['latency']) > 1:
+                jitter = abs(self.metrics['latency'][-1] - self.metrics['latency'][-2])
+                self.metrics['jitter'].append(jitter)
+            else:
+                self.metrics['jitter'].append(0)
+                
+            # Высокое энергопотребление для пороговой модели
+            self.metrics['energy_consumption'].append(migration_cost * 150)
+            self.metrics['migrations_count'] += 1
+        else:
+            # Миграция не выполнена
+            latency = 20  # минимальная задержка попытки
+            self.metrics['latency'].append(latency)
+            
+            if len(self.metrics['latency']) > 1:
+                jitter = abs(self.metrics['latency'][-1] - self.metrics['latency'][-2])
+                self.metrics['jitter'].append(jitter)
+            else:
+                self.metrics['jitter'].append(0)
+                
+            self.metrics['failed_migrations'] += 1
+        
+        # Обновляем матрицу переходов
+        self.update_transition_matrix(source_node, target_node, success)
+        
+        return success, latency
     
-    def step(self, node_metrics, service_metrics):
+    def check_threshold(self, node_loads=None):
         """
-        Выполнение одного шага моделирования
+        Проверка превышения порогового значения загрузки
         
         Параметры:
         ----------
-        node_metrics : dict
-            Текущие метрики узлов
-        service_metrics : dict
-            Текущие метрики сервисов
+        node_loads : numpy.ndarray, optional
+            Загрузки узлов для проверки. Если None, используется текущая загрузка.
             
         Возвращает:
-        ----------
-        dict
-            Результаты шага моделирования
+        -----------
+        tuple : (bool, int) - флаг превышения порога и индекс перегруженного узла
         """
-        step_results = {
-            'migrations': [],
-            'overloaded_nodes': []
+        if node_loads is None:
+            node_loads = self.node_loads
+        
+        # Печатаем максимальную загрузку и порог для отладки
+        max_load = np.max(node_loads)
+        print(f"Threshold check: max_load={max_load:.2f}, threshold={self.threshold:.2f}")
+        
+        overloaded = node_loads > self.threshold
+        if np.any(overloaded):
+            # Возвращаем узел с наибольшей перегрузкой
+            overload_index = np.argmax(node_loads)
+            return True, overload_index
+        else:
+            return False, -1
+    
+    def process_step(self, new_loads=None):
+        """
+        Обработка одного шага симуляции
+        
+        Параметры:
+        ----------
+        new_loads : numpy.ndarray, optional
+            Новые загрузки узлов
+            
+        Возвращает:
+        -----------
+        dict : Метрики производительности за данный шаг
+        """
+        if new_loads is not None:
+            self.node_loads = new_loads.copy()
+        
+        # Проверяем превышение порога
+        threshold_exceeded, overloaded_node = self.check_threshold()
+        
+        step_metrics = {
+            'latency': 0,
+            'jitter': 0,
+            'migration_performed': False,
+            'migration_success': False
         }
         
-        # Проверяем превышение пороговых значений
-        overloaded_nodes = self.check_thresholds(node_metrics)
-        step_results['overloaded_nodes'] = overloaded_nodes
-        
-        # Для каждого перегруженного узла выполняем миграцию
-        for node_id in overloaded_nodes:
+        if threshold_exceeded:
             # Выбираем сервис для миграции
-            service_id = self.select_service_for_migration(node_id, node_metrics, service_metrics)
+            service_index = self.select_service_for_migration(overloaded_node)
             
-            if service_id is None:
-                continue
+            if service_index is not None:
+                # Выбираем целевой узел
+                target_node = self.select_target_node(overloaded_node, self.service_loads[service_index])
                 
-            # Выбираем целевой узел
-            target_node = self.select_target_node(node_id, service_id, node_metrics, service_metrics)
-            
-            if target_node is None:
-                continue
+                # Выполняем миграцию
+                success, latency = self.perform_migration(service_index, target_node)
                 
-            # Выполняем миграцию
-            success = self.migrate_service(service_id, target_node)
-            
-            # Обновляем матрицу переходов
-            self.update_transition_matrix(node_id, target_node, success)
-            
-            # Записываем информацию о миграции
-            if success:
-                step_results['migrations'].append({
-                    'service_id': service_id,
-                    'source_node': node_id,
-                    'target_node': target_node
-                })
+                step_metrics['latency'] = latency
+                step_metrics['migration_performed'] = True
+                step_metrics['migration_success'] = success
+                
+                if len(self.metrics['jitter']) > 0:
+                    step_metrics['jitter'] = self.metrics['jitter'][-1]
         
-        # Сохраняем метрики для анализа
-        self.metrics_history.append({
-            'node_metrics': node_metrics.copy(),
-            'migrations': len(step_results['migrations']),
-            'overloaded_nodes': len(overloaded_nodes)
-        })
+        return step_metrics
+    
+    def get_metrics(self):
+        """
+        Получение сводных метрик модели
         
-        return step_results
+        Возвращает:
+        -----------
+        dict : Сводные метрики производительности
+        """
+        avg_latency = np.mean(self.metrics['latency']) if len(self.metrics['latency']) > 0 else 0
+        avg_jitter = np.mean(self.metrics['jitter']) if len(self.metrics['jitter']) > 0 else 0
+        avg_energy = np.mean(self.metrics['energy_consumption']) if len(self.metrics['energy_consumption']) > 0 else 0
+        
+        return {
+            'avg_latency': avg_latency,
+            'avg_jitter': avg_jitter,
+            'avg_energy_consumption': avg_energy,
+            'migrations_count': self.metrics['migrations_count'],
+            'failed_migrations': self.metrics['failed_migrations'],
+            'success_rate': 1.0 - (self.metrics['failed_migrations'] / 
+                                  max(1, self.metrics['migrations_count'] + self.metrics['failed_migrations']))
+        }

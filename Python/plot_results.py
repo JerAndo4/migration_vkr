@@ -159,19 +159,19 @@ def plot_all_models_migrations():
     plt.bar(x + width, proactive_values, width, bottom=reactive_values, 
             label='Гибридная (проактивные)', color=COLOR_HYBRID_PROACTIVE)
     
-    # Добавляем подписи количества миграций над барами
-    for i, v in enumerate(threshold_values):
-        plt.text(i - width, v + 5, f'{int(v)}', ha='center')
+    # # Добавляем подписи количества миграций над барами
+    # for i, v in enumerate(threshold_values):
+    #     plt.text(i - width, v + 5, f'{int(v)}', ha='center')
     
-    for i, v in enumerate(qlearning_values):
-        plt.text(i, v + 5, f'{int(v)}', ha='center')
+    # for i, v in enumerate(qlearning_values):
+    #     plt.text(i, v + 5, f'{int(v)}', ha='center')
     
-    for i, (r, p) in enumerate(zip(reactive_values, proactive_values)):
-        if r > 0:
-            plt.text(i + width, r/2, f'{int(r)}', ha='center', color='white')
-        if p > 0:
-            plt.text(i + width, r + p/2, f'{int(p)}', ha='center', color='white')
-        plt.text(i + width, r + p + 5, f'{int(r+p)}', ha='center')
+    # for i, (r, p) in enumerate(zip(reactive_values, proactive_values)):
+    #     if r > 0:
+    #         plt.text(i + width, r/2, f'{int(r)}', ha='center', color='white')
+    #     if p > 0:
+    #         plt.text(i + width, r + p/2, f'{int(p)}', ha='center', color='white')
+    #     plt.text(i + width, r + p + 5, f'{int(r+p)}', ha='center')
     
     # Настраиваем график
     plt.xlabel('Сценарий', fontsize=12)
