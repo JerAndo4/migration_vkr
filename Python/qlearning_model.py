@@ -8,7 +8,7 @@ class QLearningModel:
     """
     def __init__(self, num_nodes=4, num_services=20, prediction_horizon=3, 
                  learning_rate=0.1, discount_factor=0.9, exploration_rate=0.2,
-                 prediction_threshold=0.65, load_history_window=5):
+                 prediction_threshold=0.6, load_history_window=5):
         """
         Инициализация модели
         
@@ -109,85 +109,93 @@ class QLearningModel:
     
     def predict_future_load(self):
         """
-        Предсказание будущей загрузки узлов с использованием
-        экспоненциального сглаживания для более точного прогноза
+        Предсказание будущей загрузки узлов с использованием экспоненциального сглаживания.
         
         Возвращает:
         -----------
         numpy.ndarray : Предсказанная загрузка узлов через prediction_horizon тактов
         float : Максимальная предсказанная загрузка
         """
+        # Если истории мало, возвращаем последнее значение
         if len(self.load_history) < 2:
             return self.node_loads, np.max(self.node_loads)
         
-        # Используем экспоненциальное сглаживание вместо простого среднего
-        alpha = 0.3  # коэффициент сглаживания
-        
-        # Инициализация сглаженных значений
+        # Коэффициент сглаживания
+        alpha = 0.3  
+        # Инициализация сглаженных значений с использованием первого элемента истории
         smoothed = [self.load_history[0].copy()]
         
         # Экспоненциальное сглаживание
         for i in range(1, len(self.load_history)):
             smoothed.append(alpha * self.load_history[i] + (1 - alpha) * smoothed[i-1])
         
-        # Вычисление тренда на основе сглаженных значений
-        if len(smoothed) >= 2:
-            trend = smoothed[-1] - smoothed[-2]
-            
-            # Прогнозирование с учетом тренда
-            predicted_load = self.node_loads + trend * self.prediction_horizon * 1.5  # Увеличиваем горизонт для более агрессивного прогноза
-        else:
-            predicted_load = self.node_loads
+        # Используем последнее сглаженное значение в качестве базы
+        base_load = smoothed[-1]
+        
+        # Вычисляем тренд как разность между последними двумя сглаженными значениями
+        trend = smoothed[-1] - smoothed[-2]
+        
+        # Прогноз с базовым значением и линейным трендом за prediction_horizon тактов
+        predicted_load = base_load + trend * self.prediction_horizon
         
         # Ограничиваем значения в допустимом диапазоне [0, 1]
         predicted_load = np.clip(predicted_load, 0, 1)
         
         return predicted_load, np.max(predicted_load)
+
     
     def select_action(self, state, predicted_load):
         """
-        Выбор действия (сервис для миграции и целевой узел) на основе Q-таблицы
+        Выбор действия (сервис для миграции и целевой узел) на основе Q-таблицы.
         
         Параметры:
         ----------
         state : tuple
             Дискретизированное состояние системы
         predicted_load : numpy.ndarray
-            Предсказанная загрузка узлов
+            Предсказанная нагрузка узлов
             
         Возвращает:
         -----------
-        tuple : (service_index, target_node) - индекс сервиса и целевой узел
-        или None, если миграция не требуется
+        tuple : (service_index, target_node) - индекс сервиса и целевой узел,
+                либо None, если миграция не требуется.
         """
-        # Определяем наиболее загруженный узел
+        # Увеличиваем вероятность исследования
+        if np.random.random() < 0.3:  # Повышаем с 0.2 до 0.3
+            service_index = np.random.randint(0, self.num_services)
+            target_node = np.random.randint(0, self.num_nodes)
+            return service_index, target_node
+
+        # Основная логика выбора действия
+        source_node = np.argmax(predicted_load)
+        services_on_node = np.where(self.service_allocation == source_node)[0]
         source_node = np.argmax(predicted_load)
         
-        # Выбираем сервисы на этом узле
+        # Находим сервисы, размещённые на наиболее загруженном узле
         services_on_node = np.where(self.service_allocation == source_node)[0]
         
         if len(services_on_node) == 0:
             return None
         
-        # С вероятностью exploration_rate выбираем случайное действие
+        # Случайное исследование
         if np.random.random() < self.exploration_rate:
             service_index = np.random.choice(services_on_node)
             target_node = np.random.choice([n for n in range(self.num_nodes) if n != source_node])
             return service_index, target_node
         
-        # Формируем список возможных действий
+        # Формирование списка безопасных действий
         actions = []
         for service in services_on_node:
             for node in range(self.num_nodes):
                 if node != source_node:
-                    # Проверяем, не вызовет ли миграция перегрузку целевого узла
+                    # Новая нагрузка после миграции
                     new_load = predicted_load[node] + self.service_loads[service]
                     if new_load <= self.prediction_threshold:
                         action_index = service * self.num_nodes + node
                         actions.append((service, node, action_index))
         
+        # Если безопасных действий нет, выбираем действие с максимальным Q
         if not actions:
-            # Если нет безопасных действий, выбираем наилучшее среди всех
             for service in services_on_node:
                 for node in range(self.num_nodes):
                     if node != source_node:
@@ -197,11 +205,11 @@ class QLearningModel:
         if not actions:
             return None
         
-        # Выбираем действие с максимальным Q-значением
         q_values = [self.q_table[state][action[2]] for action in actions]
         max_q_index = np.argmax(q_values)
         
         return actions[max_q_index][0], actions[max_q_index][1]
+
     
     def perform_migration(self, service_index, target_node):
         """
@@ -365,7 +373,8 @@ class QLearningModel:
             'latency': 0,
             'jitter': 0,
             'migration_performed': False,
-            'migration_success': False
+            'migration_success': False,
+            'migration_mode': 'proactive'
         }
         
         # Проверяем необходимость миграции
@@ -404,7 +413,7 @@ class QLearningModel:
     
     def predict_migration(self, node_loads=None):
         """
-        Предсказание необходимости миграции на основе текущего состояния
+        Предсказание необходимости миграции на основе текущего состояния.
         
         Параметры:
         ----------
@@ -416,41 +425,27 @@ class QLearningModel:
         tuple : (bool, int) - флаг необходимости миграции и индекс перегруженного узла
         """
         if node_loads is not None:
-            # Временно сохраняем текущую загрузку
+            # Сохраняем текущую нагрузку
             old_loads = self.node_loads.copy()
             self.node_loads = node_loads.copy()
         
-        # Предсказываем будущую загрузку
         predicted_load, max_predicted_load = self.predict_future_load()
         
-        # Добавляем небольшой случайный шум для стохастичности
-        prediction_noise = np.random.normal(0, 0.03)  # Небольшой шум
+        # Добавляем случайный шум для стохастичности
+        prediction_noise = np.random.normal(0, 0.03)
         adjusted_max_load = max_predicted_load + prediction_noise
         
-        # Печатаем предсказанную нагрузку и порог для отладки
-        print(f"Q-Learning predict: max_predicted_load={max_predicted_load:.2f}, " +
-              f"adjusted={adjusted_max_load:.2f}, threshold={self.prediction_threshold:.2f}")
+        #print(f"Q-Learning predict: max_predicted_load={max_predicted_load:.2f}, adjusted={adjusted_max_load:.2f}, threshold={self.prediction_threshold:.2f}")
         
         if node_loads is not None:
-            # Восстанавливаем текущую загрузку
-            self.node_loads = old_loads
+            self.node_loads = old_loads  # Восстанавливаем исходное значение
         
         if adjusted_max_load > self.prediction_threshold:
             overload_index = np.argmax(predicted_load)
             return True, overload_index
         else:
             return False, -1
-        adjusted_max_load = max_predicted_load + prediction_noise
-        
-        if node_loads is not None:
-            # Восстанавливаем текущую загрузку
-            self.node_loads = old_loads
-        
-        if adjusted_max_load > self.prediction_threshold:
-            overload_index = np.argmax(predicted_load)
-            return True, overload_index
-        else:
-            return False, -1
+
     
     def get_metrics(self):
         """

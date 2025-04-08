@@ -18,16 +18,18 @@ class HybridModel:
             Количество узлов в системе
         num_services : int
             Количество сервисов
+        debug : bool
+            Флаг для вывода отладочных сообщений
         """
         # Параметры системы
         self.num_nodes = num_nodes
         self.num_services = num_services
+        #self.debug = debug
         
-        # Инициализация подмоделей с разными порогами для баланса
-        # ВАЖНО: Используем более низкие пороги, чтобы миграция реально срабатывала
-        # в тестовых сценариях с нагрузкой 0.5-0.7
-        self.threshold_model = ThresholdModel(num_nodes, num_services, threshold=0.65)  # Было 0.75
-        self.q_learning_model = QLearningModel(num_nodes, num_services, prediction_threshold=0.70)  # Было 0.80
+        # Инициализация подмоделей с правильными порогами
+        # ВАЖНО: реактивный порог ВЫШЕ проактивного
+        self.threshold_model = ThresholdModel(num_nodes, num_services)
+        self.q_learning_model = QLearningModel(num_nodes, num_services)
         
         # Текущее состояние системы
         self.node_loads = np.zeros(num_nodes)
@@ -52,9 +54,10 @@ class HybridModel:
         self.consecutive_proactive = 0
         
         # Инициализация сообщения для отладки
-        print("Hybrid model initialized with:")
-        print(f"  - Reactive threshold: 0.65")  # Обновлено
-        print(f"  - Proactive threshold: 0.70")  # Обновлено
+        # if self.debug:
+        #     print("Hybrid model initialized with:")
+        #     print(f"  - Reactive threshold: 0.75")
+        #     print(f"  - Proactive threshold: 0.65")
 
     def initialize_system(self, node_loads, service_allocation, service_loads):
         """
@@ -78,11 +81,105 @@ class HybridModel:
         self.threshold_model.initialize_system(node_loads, service_allocation, service_loads)
         self.q_learning_model.initialize_system(node_loads, service_allocation, service_loads)
         
-        print("System initialized with:")
-        print(f"  - Initial max load: {np.max(node_loads):.2f}")
-        print(f"  - Services: {self.num_services}")
-        print(f"  - Nodes: {self.num_nodes}")
+        # if self.debug:
+        #     print("System initialized with:")
+        #     print(f"  - Initial max load: {np.max(node_loads):.2f}")
+        #     print(f"  - Services: {self.num_services}")
+        #     print(f"  - Nodes: {self.num_nodes}")
 
+    def update_loads(self, new_loads):
+        """
+        Обновить данные о нагрузке во всех моделях
+        
+        Параметры:
+        ----------
+        new_loads : numpy.ndarray
+            Новые значения нагрузки узлов
+        """
+        # Обновляем собственное состояние
+        self.node_loads = new_loads.copy()
+        
+        # Обновляем состояние подмоделей
+        self.threshold_model.node_loads = new_loads.copy()
+        self.q_learning_model.node_loads = new_loads.copy()
+        
+        # Обновляем историю загрузки для q-learning модели
+        self.q_learning_model.load_history.append(new_loads.copy())
+        if len(self.q_learning_model.load_history) > self.q_learning_model.load_history_window:
+            self.q_learning_model.load_history.pop(0)
+
+    def decide_migration_strategy(self, reactive_needed, proactive_needed):
+        """
+        Определить оптимальную стратегию миграции с улучшенным сравнением
+        """
+        # Если миграция не требуется
+        if not reactive_needed and not proactive_needed:
+            return None
+
+        # Параллельная оценка миграционных возможностей
+        reactive_service = self.threshold_model.select_service_for_migration(
+            self.threshold_model.service_allocation.argmax()
+        )
+        
+        proactive_action = self.q_learning_model.select_action(
+            self.q_learning_model.discretize_state(), 
+            self.q_learning_model.predict_future_load()[0]
+        )
+
+        # Логика выбора стратегии
+        if reactive_service is not None and proactive_action is not None:
+            # Расширенный анализ миграционных возможностей
+            reactive_load_impact = self.threshold_model.service_loads[reactive_service]
+            proactive_service, proactive_target = proactive_action
+            proactive_load_impact = self.service_loads[proactive_service]
+
+            # Многокритериальная оценка
+            reactive_score = 0
+            proactive_score = 0
+
+            # Оценка влияния на загрузку
+            load_weight = 0.4
+            reactive_score += (reactive_load_impact * load_weight)
+            proactive_score += (proactive_load_impact * load_weight)
+
+            # Оценка вероятности успеха миграции
+            success_weight = 0.3
+            reactive_success_prob = 0.85  # Базовая вероятность для реактивной модели
+            proactive_success_prob = 0.70  # Базовая вероятность для проактивной модели
+            reactive_score += (reactive_success_prob * success_weight)
+            proactive_score += (proactive_success_prob * success_weight)
+
+            # Оценка текущего баланса миграций
+            balance_weight = 0.2
+            reactive_migrations = self.metrics['reactive_migrations']
+            proactive_migrations = self.metrics['proactive_migrations']
+            migration_balance_factor = abs(reactive_migrations - proactive_migrations) / (reactive_migrations + proactive_migrations + 1)
+            
+            if reactive_migrations > proactive_migrations:
+                proactive_score += migration_balance_factor * balance_weight
+            else:
+                reactive_score += migration_balance_factor * balance_weight
+
+            # Добавление случайности
+            reactive_score += np.random.normal(0, 0.05)
+            proactive_score += np.random.normal(0, 0.05)
+
+            # Финальный выбор стратегии
+            if proactive_score > reactive_score:
+                return 'proactive'
+            else:
+                return 'reactive'
+
+        # Если доступна только реактивная миграция
+        if reactive_service is not None:
+            return 'reactive'
+
+        # Если доступна только проактивная миграция
+        if proactive_action is not None:
+            return 'proactive'
+
+        return None
+    
     def process_step(self, new_loads=None):
         """
         Обработка одного шага симуляции
@@ -101,17 +198,7 @@ class HybridModel:
         
         # Устанавливаем новые загрузки узлов, если предоставлены
         if new_loads is not None:
-            # Обновляем собственное состояние
-            self.node_loads = new_loads.copy()
-            
-            # Обновляем состояние подмоделей
-            self.threshold_model.node_loads = new_loads.copy()
-            self.q_learning_model.node_loads = new_loads.copy()
-            
-            # Обновляем историю загрузки для q-learning модели
-            self.q_learning_model.load_history.append(new_loads.copy())
-            if len(self.q_learning_model.load_history) > self.q_learning_model.load_history_window:
-                self.q_learning_model.load_history.pop(0)
+            self.update_loads(new_loads)
         
         # Результирующие метрики для этого шага
         step_metrics = {
@@ -122,8 +209,7 @@ class HybridModel:
             'migration_mode': None
         }
         
-        # ШАГ 1: ПАРАЛЛЕЛЬНО ПРОВЕРЯЕМ НЕОБХОДИМОСТЬ МИГРАЦИИ ОБОИМИ МЕТОДАМИ
-        
+        # ШАГ 1: ПРОВЕРКА НЕОБХОДИМОСТИ МИГРАЦИИ
         # Проверка реактивной миграции - превышен ли порог текущей нагрузки
         reactive_needed, overloaded_node = self.threshold_model.check_threshold()
         
@@ -133,113 +219,122 @@ class HybridModel:
         # Получаем текущую максимальную нагрузку для логирования
         max_load = np.max(self.node_loads)
         
-        # Логируем состояние системы и результаты проверок
-        print(f"Step {self.step_counter}: Max load={max_load:.2f}, " +
-              f"Reactive={reactive_needed}, Proactive={proactive_needed}, " +
-              f"Reactive_streak={self.consecutive_reactive}, Proactive_streak={self.consecutive_proactive}")
+        # if self.debug:
+        #     print(f"Step {self.step_counter}: Max load={max_load:.2f}, " +
+        #           f"Reactive={reactive_needed}, Proactive={proactive_needed}, " +
+        #           f"Reactive_streak={self.consecutive_reactive}, Proactive_streak={self.consecutive_proactive}")
         
-        # ШАГ 2: ВЫБИРАЕМ СТРАТЕГИЮ МИГРАЦИИ НА ОСНОВЕ НЕСКОЛЬКИХ ФАКТОРОВ
+        # ШАГ 2: ВЫБОР СТРАТЕГИИ МИГРАЦИИ
+        strategy = self.decide_migration_strategy(reactive_needed, proactive_needed)
         
-        # Флаги для определения приоритетов стратегий
-        perform_reactive = False
-        perform_proactive = False
-        
-        # Правило 1: При высокой нагрузке (>0.75) приоритет реактивной миграции
-        high_load = max_load > 0.75  # Снижаем порог с 0.85 до 0.75
-        
-        # Правило 2: Если много последовательных миграций одного типа,
-        # принудительно переключаемся на другой тип
-        too_many_reactive = self.consecutive_reactive >= 3
-        too_many_proactive = self.consecutive_proactive >= 3
-        
-        # ПРИНУДИТЕЛЬНОЕ ЧЕРЕДОВАНИЕ: если не было реактивных миграций вообще, 
-        # принудительно выполняем её при первой возможности
-        if self.metrics['reactive_migrations'] == 0 and reactive_needed:
-            perform_reactive = True
-            print("  FORCING first reactive migration")
-        # Аналогично для проактивных
-        elif self.metrics['proactive_migrations'] == 0 and proactive_needed:
-            perform_proactive = True
-            print("  FORCING first proactive migration")
-        # Правило 3: Начальное предпочтение на основе текущей нагрузки
-        elif high_load:
-            # При высокой нагрузке предпочитаем реактивную миграцию
-            if reactive_needed:
-                perform_reactive = True
-                print("  Using reactive due to high load")
-            elif proactive_needed and too_many_reactive:
-                # Но если много реактивных подряд, пробуем проактивную
-                perform_proactive = True
-                print("  Using proactive due to too many reactive migrations despite high load")
-        elif too_many_proactive and reactive_needed:
-            # При слишком многих проактивных подряд переключаемся на реактивную
-            perform_reactive = True
-            print("  Using reactive due to too many proactive migrations")
-        elif too_many_reactive and proactive_needed:
-            # При слишком многих реактивных подряд переключаемся на проактивную
-            perform_proactive = True
-            print("  Using proactive due to too many reactive migrations")
-        else:
-            # В остальных случаях используем обе стратегии по необходимости
-            if reactive_needed:
-                perform_reactive = True
-                print("  Using reactive based on threshold check")
-            elif proactive_needed:
-                perform_proactive = True
-                print("  Using proactive based on prediction")
-        
-        # ШАГ 3: ВЫПОЛНЯЕМ ВЫБРАННУЮ СТРАТЕГИЮ МИГРАЦИИ
-        
-        # Флаг успешной миграции
-        migration_success = False
-        
-        # Сначала пробуем реактивную миграцию если она выбрана
-        if perform_reactive:
-            print(f"  Attempting REACTIVE migration for node {overloaded_node}")
+        # ШАГ 3: ВЫПОЛНЕНИЕ МИГРАЦИИ
+        if strategy:
+            source_node = overloaded_node if strategy == 'reactive' else future_overloaded_node
+            success, latency, migration_info = self._execute_migration(strategy, source_node)
             
-            # Выбираем сервис для миграции с наиболее загруженного узла
-            service_index = self.threshold_model.select_service_for_migration(overloaded_node)
-            
-            if service_index is not None:
-                # Выбираем целевой узел для миграции
-                target_node = self.threshold_model.select_target_node(
-                    overloaded_node, self.service_loads[service_index]
-                )
+            if success:
+                # Обновляем метрики
+                step_metrics['latency'] = latency
+                step_metrics['migration_performed'] = True
+                step_metrics['migration_success'] = True
+                step_metrics['migration_mode'] = strategy
                 
-                # Выполняем миграцию
-                source_node = self.service_allocation[service_index]
-                
-                # Проверка, что миграция не осуществляется на тот же узел
-                if target_node != source_node:
-                    success, latency = self._execute_migration(
-                        service_index, target_node, source_node, 'reactive'
-                    )
+                # Обновляем счетчики последовательностей
+                if strategy == 'reactive':
+                    self.consecutive_reactive += 1
+                    self.consecutive_proactive = 0
+                    self.last_migration_type = 'reactive'
+                    self.metrics['reactive_migrations'] += 1
                     
-                    if success:
-                        migration_success = True
-                        step_metrics['latency'] = latency
-                        step_metrics['migration_performed'] = True
-                        step_metrics['migration_success'] = True
-                        step_metrics['migration_mode'] = 'reactive'
-                        
-                        # Обновляем счетчики последовательностей
-                        self.consecutive_reactive += 1
-                        self.consecutive_proactive = 0
-                        self.last_migration_type = 'reactive'
-                        
-                        if len(self.metrics['jitter']) > 0:
-                            step_metrics['jitter'] = self.metrics['jitter'][-1]
-                        
-                        print(f"  Reactive migration successful: service {service_index} from node {source_node} to {target_node}")
-                    else:
-                        print(f"  Reactive migration failed: service {service_index} from node {source_node} to {target_node}")
-                else:
-                    print(f"  Reactive migration skipped: source and target nodes are the same ({source_node})")
-        
-        # Затем пробуем проактивную миграцию, если она выбрана и реактивная не удалась
-        if perform_proactive and not migration_success:
-            print(f"  Attempting PROACTIVE migration for predicted overloaded node {future_overloaded_node}")
+                    # Дополнительно обновляем статистику в модели с пороговыми значениями
+                    self.threshold_model.update_transition_matrix(
+                        migration_info['source_node'], 
+                        migration_info['target_node'], 
+                        success
+                    )
+                else:  # proactive
+                    self.consecutive_proactive += 1
+                    self.consecutive_reactive = 0
+                    self.last_migration_type = 'proactive'
+                    self.metrics['proactive_migrations'] += 1
+                    
+                    # Обновляем Q-значения в Q-learning модели
+                    if 'q_update_info' in migration_info:
+                        info = migration_info['q_update_info']
+                        self.q_learning_model.update_q_value(
+                            info['state'], 
+                            info['action_index'], 
+                            info['reward'], 
+                            info['next_state']
+                        )
+                
+                if len(self.metrics['jitter']) > 0:
+                    step_metrics['jitter'] = self.metrics['jitter'][-1]
+                
+                # if self.debug:
+                #     print(f"  {strategy.capitalize()} migration successful: service {migration_info['service_index']} " + 
+                #           f"from node {migration_info['source_node']} to {migration_info['target_node']}")
+            # else:
+            #     if self.debug:
+            #         if 'service_index' in migration_info:
+            #             print(f"  {strategy.capitalize()} migration failed: service {migration_info['service_index']} " +
+            #                   f"from node {migration_info['source_node']} to {migration_info['target_node']}")
+            #         else:
+            #             print(f"  {strategy.capitalize()} migration failed: no suitable service found")
+        else:
+            # Если миграция не требуется, сбрасываем счетчики последовательностей
+            if not reactive_needed and not proactive_needed:
+                self.consecutive_reactive = 0
+                self.consecutive_proactive = 0
             
+            # if self.debug:
+            #     print("  No migration needed in this step")
+        
+        return step_metrics
+
+    def _execute_migration(self, strategy, source_node):
+        """
+        Выполнение миграции сервиса
+        
+        Параметры:
+        ----------
+        strategy : str
+            Стратегия миграции ('reactive' или 'proactive')
+        source_node : int
+            Индекс исходного узла
+            
+        Возвращает:
+        -----------
+        tuple : (success, latency, info_dict)
+            success : bool - Флаг успешности миграции
+            latency : float - Задержка, возникшая при миграции
+            info_dict : dict - Дополнительная информация о миграции
+        """
+        # Результирующий словарь с информацией о миграции
+        info = {'strategy': strategy}
+        
+        # Выбор сервиса и целевого узла в зависимости от стратегии
+        if strategy == 'reactive':
+            # Выбираем сервис для миграции с перегруженного узла
+            service_index = self.threshold_model.select_service_for_migration(source_node)
+            
+            if service_index is None:
+                return False, 0, {'strategy': strategy}
+            
+            # Выбираем целевой узел для миграции
+            target_node = self.threshold_model.select_target_node(
+                source_node, self.service_loads[service_index]
+            )
+            
+            # Проверяем, что миграция не осуществляется на тот же узел
+            if target_node == source_node:
+                return False, 0, {'strategy': strategy, 'source_node': source_node, 'target_node': target_node}
+            
+            info['service_index'] = service_index
+            info['source_node'] = source_node
+            info['target_node'] = target_node
+            
+        else:  # strategy == 'proactive'
             # Получаем состояние и прогнозируемую нагрузку
             current_state = self.q_learning_model.discretize_state()
             predicted_load, _ = self.q_learning_model.predict_future_load()
@@ -247,68 +342,27 @@ class HybridModel:
             # Выбираем действие на основе Q-значений
             action = self.q_learning_model.select_action(current_state, predicted_load)
             
-            if action is not None:
-                service_index, target_node = action
-                source_node = self.service_allocation[service_index]
-                
-                # Проверка, что миграция не осуществляется на тот же узел
-                if target_node != source_node:
-                    success, latency = self._execute_migration(
-                        service_index, target_node, source_node, 'proactive'
-                    )
-                    
-                    if success:
-                        migration_success = True
-                        step_metrics['latency'] = latency
-                        step_metrics['migration_performed'] = True
-                        step_metrics['migration_success'] = True
-                        step_metrics['migration_mode'] = 'proactive'
-                        
-                        # Обновляем счетчики последовательностей
-                        self.consecutive_proactive += 1
-                        self.consecutive_reactive = 0
-                        self.last_migration_type = 'proactive'
-                        
-                        if len(self.metrics['jitter']) > 0:
-                            step_metrics['jitter'] = self.metrics['jitter'][-1]
-                        
-                        print(f"  Proactive migration successful: service {service_index} from node {source_node} to {target_node}")
-                    else:
-                        print(f"  Proactive migration failed: service {service_index} from node {source_node} to {target_node}")
-                else:
-                    print(f"  Proactive migration skipped: source and target nodes are the same ({source_node})")
-        
-        # Если никакая миграция не выполнена, сбрасываем счетчики последовательностей
-        if not step_metrics['migration_performed']:
-            # Если не было необходимости в миграции, сбрасываем счетчики
-            if not reactive_needed and not proactive_needed:
-                self.consecutive_reactive = 0
-                self.consecutive_proactive = 0
+            if action is None:
+                return False, 0, {'strategy': strategy}
             
-            print("  No migration performed in this step")
-        
-        return step_metrics
-
-    def _execute_migration(self, service_index, target_node, source_node, mode):
-        """
-        Выполнение миграции сервиса
-        
-        Параметры:
-        ----------
-        service_index : int
-            Индекс сервиса для миграции
-        target_node : int
-            Индекс целевого узла
-        source_node : int
-            Индекс исходного узла
-        mode : str
-            Режим миграции ('reactive' или 'proactive')
+            service_index, target_node = action
+            source_node = self.service_allocation[service_index]
             
-        Возвращает:
-        -----------
-        bool : Флаг успешности миграции
-        float : Задержка, возникшая при миграции
-        """
+            # Проверка, что миграция не осуществляется на тот же узел
+            if target_node == source_node:
+                return False, 0, {'strategy': strategy, 'service_index': service_index, 
+                                  'source_node': source_node, 'target_node': target_node}
+            
+            info['service_index'] = service_index
+            info['source_node'] = source_node
+            info['target_node'] = target_node
+            
+            # Сохраняем информацию для обновления Q-значений
+            info['q_update_info'] = {
+                'state': current_state,
+                'action_index': service_index * self.num_nodes + target_node
+            }
+        
         # Получаем нагрузку сервиса
         service_load = self.service_loads[service_index]
         
@@ -316,12 +370,12 @@ class HybridModel:
         migration_cost = service_load * (self.node_loads[source_node] + self.node_loads[target_node]) / 2
         
         # Параметры миграции зависят от режима
-        if mode == 'reactive':
+        if strategy == 'reactive':
             # Реактивная миграция: более надежная, но медленнее
             success_prob = max(0.85, 1.0 - migration_cost * 0.3)
             base_latency = 60
             energy_factor = 120
-        else:  # mode == 'proactive'
+        else:  # strategy == 'proactive'
             # Проактивная миграция: менее надежная, но быстрее
             success_prob = max(0.70, 1.0 - migration_cost * 0.5)
             base_latency = 30
@@ -331,12 +385,14 @@ class HybridModel:
         success = np.random.random() < success_prob
         
         if success:
+            # Сохраняем старую загрузку узлов для расчета награды (для Q-learning)
+            old_load = self.node_loads.copy()
+            
             # Обновляем загрузку узлов
             self.node_loads[source_node] -= service_load
             self.node_loads[target_node] += service_load
             
             # Обновляем распределение сервисов
-            old_allocation = self.service_allocation[service_index]
             self.service_allocation[service_index] = target_node
             
             # Обновляем состояние обеих подмоделей
@@ -359,21 +415,19 @@ class HybridModel:
             self.metrics['energy_consumption'].append(migration_cost * energy_factor)
             self.metrics['migrations_count'] += 1
             
-            # Обновляем специфические счетчики
-            if mode == 'reactive':
-                self.metrics['reactive_migrations'] += 1
-                # Обновляем матрицу переходов в пороговой модели
-                self.threshold_model.update_transition_matrix(source_node, target_node, success)
-            else:  # mode == 'proactive'
-                self.metrics['proactive_migrations'] += 1
-                # Обновляем Q-значения в Q-learning модели
-                current_state = self.q_learning_model.discretize_state()
-                action_index = service_index * self.num_nodes + target_node
-                reward = self.q_learning_model.calculate_reward(
-                    self.node_loads, self.node_loads, success, latency
-                )
+            # Если это проактивная миграция, вычисляем награду для Q-learning
+            if strategy == 'proactive':
+                # Дискретизируем новое состояние
                 next_state = self.q_learning_model.discretize_state()
-                self.q_learning_model.update_q_value(current_state, action_index, reward, next_state)
+                
+                # Рассчитываем награду
+                reward = self.q_learning_model.calculate_reward(
+                    old_load, self.node_loads, success, latency
+                )
+                
+                # Добавляем информацию для обновления Q-значений
+                info['q_update_info']['reward'] = reward
+                info['q_update_info']['next_state'] = next_state
         else:
             # Миграция не удалась
             latency = 15  # минимальная задержка попытки
@@ -387,7 +441,7 @@ class HybridModel:
                 
             self.metrics['failed_migrations'] += 1
         
-        return success, latency
+        return success, latency, info
 
     def get_metrics(self):
         """
@@ -408,14 +462,15 @@ class HybridModel:
         proactive_ratio = self.metrics['proactive_migrations'] / max(1, total_migrations)
         
         # Выводим сводную статистику для отладки
-        print("\nHybrid model final statistics:")
-        print(f"  Total migrations: {total_migrations}")
-        print(f"  Reactive migrations: {self.metrics['reactive_migrations']} ({reactive_ratio:.2f})")
-        print(f"  Proactive migrations: {self.metrics['proactive_migrations']} ({proactive_ratio:.2f})")
-        print(f"  Failed migrations: {self.metrics['failed_migrations']}")
-        print(f"  Average latency: {avg_latency:.2f} ms")
-        print(f"  Average jitter: {avg_jitter:.2f} ms")
-        print(f"  Average energy consumption: {avg_energy:.2f} units")
+        # if self.debug:
+        #     print("\nHybrid model final statistics:")
+        #     print(f"  Total migrations: {total_migrations}")
+        #     print(f"  Reactive migrations: {self.metrics['reactive_migrations']} ({reactive_ratio:.2f})")
+        #     print(f"  Proactive migrations: {self.metrics['proactive_migrations']} ({proactive_ratio:.2f})")
+        #     print(f"  Failed migrations: {self.metrics['failed_migrations']}")
+        #     print(f"  Average latency: {avg_latency:.2f} ms")
+        #     print(f"  Average jitter: {avg_jitter:.2f} ms")
+        #     print(f"  Average energy consumption: {avg_energy:.2f} units")
         
         # Возвращаем словарь с метриками
         return {

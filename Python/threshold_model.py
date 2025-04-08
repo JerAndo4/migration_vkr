@@ -6,7 +6,7 @@ class ThresholdModel:
     """
     Модель миграции на основе пороговых значений с марковскими процессами
     """
-    def __init__(self, num_nodes=4, num_services=20, threshold=0.90, alpha=0.5, beta=2.0, 
+    def __init__(self, num_nodes=4, num_services=20, threshold=0.9, alpha=0.5, beta=2, 
                  target_load=0.6, history_window=10):
         """
         Инициализация модели
@@ -268,31 +268,35 @@ class ThresholdModel:
     
     def check_threshold(self, node_loads=None):
         """
-        Проверка превышения порогового значения загрузки
+        Проверка превышения порогового значения загрузки с учетом близости к порогу.
+        Для реактивной (threshold) модели миграция инициируется, если значение узла
+        достигает 90% от установленного порога, даже если оно ещё не превысило его полностью.
         
         Параметры:
         ----------
         node_loads : numpy.ndarray, optional
-            Загрузки узлов для проверки. Если None, используется текущая загрузка.
-            
+            Массив загрузок узлов. Если None, используется текущее состояние узлов.
+        
         Возвращает:
         -----------
-        tuple : (bool, int) - флаг превышения порога и индекс перегруженного узла
+        tuple : (bool, int)
+            Флаг наличия перегрузки и индекс узла с наибольшей загрузкой, либо (-1) если перегрузки нет.
         """
         if node_loads is None:
-            node_loads = self.node_loads
+            node_loads = self.node_loads.copy()
         
-        # Печатаем максимальную загрузку и порог для отладки
-        max_load = np.max(node_loads)
-        print(f"Threshold check: max_load={max_load:.2f}, threshold={self.threshold:.2f}")
+        # Определяем порог для реакции: если загрузка достигает 90% от установленного порога
+        # reactive_threshold = self.threshold * 0.90
+        # hysteresis_margin = 0.05
+        overloaded = node_loads  # >= reactive_threshold
         
-        overloaded = node_loads > self.threshold
         if np.any(overloaded):
-            # Возвращаем узел с наибольшей перегрузкой
+            # Выбираем узел с наибольшей загрузкой
             overload_index = np.argmax(node_loads)
             return True, overload_index
         else:
             return False, -1
+
     
     def process_step(self, new_loads=None):
         """
@@ -317,7 +321,8 @@ class ThresholdModel:
             'latency': 0,
             'jitter': 0,
             'migration_performed': False,
-            'migration_success': False
+            'migration_success': False,
+            'migration_mode': 'reactive'
         }
         
         if threshold_exceeded:

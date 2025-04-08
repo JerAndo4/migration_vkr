@@ -5,6 +5,10 @@ import os
 import glob
 import matplotlib as mpl
 from tabulate import tabulate
+import sys
+
+# Настройка вывода для отладки
+DEBUG = True
 
 # Настройка шрифтов для корректного отображения русских символов
 mpl.rcParams['font.family'] = 'DejaVu Sans'
@@ -18,9 +22,31 @@ COLOR_HYBRID = 'indianred'
 COLOR_HYBRID_REACTIVE = 'indianred'
 COLOR_HYBRID_PROACTIVE = 'darkorange'
 
+def check_file_exists(filename):
+    """
+    Проверяет наличие файла и выводит информацию
+    
+    Параметры:
+    ----------
+    filename : str
+        Путь к файлу
+        
+    Возвращает:
+    ----------
+    bool : True, если файл существует
+    """
+    if os.path.exists(filename):
+        if DEBUG:
+            print(f"Файл найден: {filename}")
+        return True
+    else:
+        if DEBUG:
+            print(f"Предупреждение: Файл не найден: {filename}")
+        return False
+
 def load_results(scenario_name, model_name):
     """
-    Загрузка результатов симуляции из CSV-файла
+    Загрузка результатов симуляции с проверкой разных возможных путей
     
     Параметры:
     ----------
@@ -31,33 +57,85 @@ def load_results(scenario_name, model_name):
         
     Возвращает:
     ----------
-    pandas.DataFrame
-        Данные результатов
+    pandas.DataFrame или None : данные или None, если файл не найден
     """
-    filename = f'results/{scenario_name}_{model_name}.csv'
+    # Список возможных путей к файлам
+    possible_paths = [
+        f'results/{scenario_name}_{model_name}.csv',   # Ожидаемый формат в results/
+        f'{scenario_name}_{model_name}.csv',           # Возможно в корневой директории
+        f'results/{scenario_name}_results.csv'         # Общий файл с результатами в results/
+    ]
     
-    if os.path.exists(filename):
-        try:
-            df = pd.read_csv(filename)
-            print(f"Загружен файл {filename}, {len(df)} строк")
-            return df
-        except Exception as e:
-            print(f"Ошибка при загрузке файла {filename}: {e}")
-            return None
-    else:
-        print(f"Предупреждение: Файл не найден: {filename}")
-        return None
+    # Пробуем загрузить из любого доступного пути
+    for path in possible_paths:
+        if check_file_exists(path):
+            try:
+                df = pd.read_csv(path)
+                
+                # Если это общий файл результатов, фильтруем по модели
+                if 'model' in df.columns and model_name != 'all':
+                    df = df[df['model'] == model_name]
+                    
+                if DEBUG:
+                    print(f"Загружен файл {path}, {len(df)} строк")
+                return df
+            except Exception as e:
+                if DEBUG:
+                    print(f"Ошибка при загрузке файла {path}: {e}")
+                continue
+    
+    if DEBUG:
+        print(f"Предупреждение: Файл не найден: results/{scenario_name}_{model_name}.csv")
+    return None
 
+def find_summary_files():
+    """
+    Поиск файлов с сводными результатами
+    
+    Возвращает:
+    ----------
+    list : список путей к файлам
+    """
+    # Список возможных путей для поиска
+    possible_paths = [
+        'results/*_summary.csv',
+        '*_summary.csv'
+    ]
+    
+    # Собираем все найденные файлы
+    summary_files = []
+    for pattern in possible_paths:
+        files = glob.glob(pattern)
+        if files:
+            summary_files.extend(files)
+            if DEBUG:
+                print(f"Найдены файлы по шаблону {pattern}: {len(files)}")
+    
+    if not summary_files:
+        if DEBUG:
+            print("Файлы с сводными результатами не найдены.")
+    else:
+        if DEBUG:
+            print(f"Всего найдено файлов с сводными результатами: {len(summary_files)}")
+            for file in summary_files[:5]:  # Выводим первые 5 для примера
+                print(f"  - {file}")
+            if len(summary_files) > 5:
+                print(f"  ... и еще {len(summary_files) - 5}")
+    
+    return summary_files
 
 def plot_all_models_migrations():
     """
     График 1: Сравнение количества миграций для всех моделей по всем сценариям
     с разделением на реактивные и проактивные для гибридной модели
     """
+    if DEBUG:
+        print("Генерация графика сравнения миграций для всех моделей...")
+    
     plt.figure(figsize=(15, 8))
     
     # Список всех summary файлов
-    summary_files = glob.glob('results/*_summary.csv')
+    summary_files = find_summary_files()
     
     if not summary_files:
         print("Файлы с результатами не найдены")
@@ -66,8 +144,17 @@ def plot_all_models_migrations():
     # Загружаем и объединяем все данные
     all_data = []
     for file in summary_files:
-        data = pd.read_csv(file)
-        all_data.append(data)
+        try:
+            data = pd.read_csv(file)
+            all_data.append(data)
+            if DEBUG:
+                print(f"Загружены данные из {file}, {len(data)} строк")
+        except Exception as e:
+            print(f"Ошибка при загрузке файла {file}: {e}")
+    
+    if not all_data:
+        print("Не удалось загрузить данные из файлов")
+        return
     
     summary_df = pd.concat(all_data, ignore_index=True)
     
@@ -80,12 +167,16 @@ def plot_all_models_migrations():
         'limited_resources': 'Ограниченные\nресурсы'
     }
     
-    # Отфильтровываем только нужные сценарии (исключаем limited_resources, если нужно)
-    main_scenarios = ['critical', 'standard', 'mixed', 'dynamic']
+    # Отфильтровываем только нужные сценарии
+    main_scenarios = ['critical', 'standard', 'mixed', 'dynamic', 'limited_resources']
     
     # Фильтруем данные по миграциям
     migration_data = summary_df[summary_df['metric'] == 'total_migrations']
     migration_data = migration_data[migration_data['scenario'].isin(main_scenarios)]
+    
+    if migration_data.empty:
+        print("Данные о миграциях не найдены в summary файлах")
+        return
     
     # Создаем DataFrame для визуализации
     plot_data = {}
@@ -96,6 +187,10 @@ def plot_all_models_migrations():
                                       (migration_data['model'] == model)]
             if not model_data.empty:
                 plot_data[scenario][model] = model_data['value'].values[0]
+            else:
+                if DEBUG:
+                    print(f"Отсутствуют данные для сценария {scenario}, модель {model}")
+                plot_data[scenario][model] = 0
     
     # Получаем данные о разделении миграций для гибридной модели
     hybrid_reactive = {}
@@ -113,6 +208,8 @@ def plot_all_models_migrations():
             # Оцениваем как 50% от общего количества, если нет точных данных
             total = plot_data[scenario].get('hybrid', 0)
             hybrid_reactive[scenario] = total * 0.5
+            if DEBUG:
+                print(f"Данные о реактивных миграциях для сценария {scenario} не найдены. Используется оценка.")
         
         # Ищем данные о проактивных миграциях
         proactive_data = summary_df[(summary_df['scenario'] == scenario) & 
@@ -124,6 +221,8 @@ def plot_all_models_migrations():
             # Оцениваем как 50% от общего количества, если нет точных данных
             total = plot_data[scenario].get('hybrid', 0)
             hybrid_proactive[scenario] = total * 0.5
+            if DEBUG:
+                print(f"Данные о проактивных миграциях для сценария {scenario} не найдены. Используется оценка.")
     
     # Ширина баров
     width = 0.25
@@ -141,51 +240,43 @@ def plot_all_models_migrations():
     proactive_values = [hybrid_proactive.get(scenario, 0) for scenario in main_scenarios]
     
     # Выводим данные для отладки
-    print("\nДанные о миграциях:")
-    for i, scenario in enumerate(main_scenarios):
-        print(f"Сценарий: {scenario}")
-        print(f"  Пороговая модель: {threshold_values[i]}")
-        print(f"  Q-Learning модель: {qlearning_values[i]}")
-        print(f"  Гибридная модель (всего): {reactive_values[i] + proactive_values[i]}")
-        print(f"    - Реактивные: {reactive_values[i]}")
-        print(f"    - Проактивные: {proactive_values[i]}")
+    if DEBUG:
+        print("\nДанные о миграциях:")
+        for i, scenario in enumerate(main_scenarios):
+            print(f"Сценарий: {scenario}")
+            print(f"  Пороговая модель: {threshold_values[i]}")
+            print(f"  Q-Learning модель: {qlearning_values[i]}")
+            print(f"  Гибридная модель (всего): {reactive_values[i] + proactive_values[i]}")
+            print(f"    - Реактивные: {reactive_values[i]}")
+            print(f"    - Проактивные: {proactive_values[i]}")
     
-    # Создаем бары
-    plt.bar(x - width, threshold_values, width, label='Пороговая модель', color=COLOR_THRESHOLD)
-    plt.bar(x, qlearning_values, width, label='Q-Learning модель', color=COLOR_QLEARNING)
+    # Создаем бары (только если есть данные)
+    if any(threshold_values) or any(qlearning_values) or any(reactive_values) or any(proactive_values):
+        plt.bar(x - width, threshold_values, width, label='Пороговая модель', color=COLOR_THRESHOLD)
+        plt.bar(x, qlearning_values, width, label='Q-Learning модель', color=COLOR_QLEARNING)
+        
+        # Создаем составной бар для гибридной модели
+        plt.bar(x + width, reactive_values, width, label='Гибридная (реактивные)', color=COLOR_HYBRID_REACTIVE)
+        plt.bar(x + width, proactive_values, width, bottom=reactive_values, 
+                label='Гибридная (проактивные)', color=COLOR_HYBRID_PROACTIVE)
+        
+        # Настраиваем график
+        plt.xlabel('Сценарий', fontsize=12)
+        plt.ylabel('Количество миграций', fontsize=12)
+        plt.title('Сравнение количества миграций по всем сценариям и моделям', fontsize=14, fontweight='bold')
+        plt.xticks(x, scenario_names)
+        plt.legend(fontsize=10)
+        plt.grid(True, linestyle='--', alpha=0.7, axis='y')
+        
+        # Сохраняем график
+        plt.tight_layout()
+        plt.savefig('plots/all_models_migrations.png', dpi=300, bbox_inches='tight')
+        if DEBUG:
+            print("График сохранен: plots/all_models_migrations.png")
+    else:
+        print("Нет данных для построения графика миграций")
     
-    # Создаем составной бар для гибридной модели
-    plt.bar(x + width, reactive_values, width, label='Гибридная (реактивные)', color=COLOR_HYBRID_REACTIVE)
-    plt.bar(x + width, proactive_values, width, bottom=reactive_values, 
-            label='Гибридная (проактивные)', color=COLOR_HYBRID_PROACTIVE)
-    
-    # # Добавляем подписи количества миграций над барами
-    # for i, v in enumerate(threshold_values):
-    #     plt.text(i - width, v + 5, f'{int(v)}', ha='center')
-    
-    # for i, v in enumerate(qlearning_values):
-    #     plt.text(i, v + 5, f'{int(v)}', ha='center')
-    
-    # for i, (r, p) in enumerate(zip(reactive_values, proactive_values)):
-    #     if r > 0:
-    #         plt.text(i + width, r/2, f'{int(r)}', ha='center', color='white')
-    #     if p > 0:
-    #         plt.text(i + width, r + p/2, f'{int(p)}', ha='center', color='white')
-    #     plt.text(i + width, r + p + 5, f'{int(r+p)}', ha='center')
-    
-    # Настраиваем график
-    plt.xlabel('Сценарий', fontsize=12)
-    plt.ylabel('Количество миграций', fontsize=12)
-    plt.title('Сравнение количества миграций по всем сценариям и моделям', fontsize=14, fontweight='bold')
-    plt.xticks(x, scenario_names)
-    plt.legend(fontsize=10)
-    plt.grid(True, linestyle='--', alpha=0.7, axis='y')
-    
-    # Сохраняем график
-    plt.tight_layout()
-    plt.savefig('plots/all_models_migrations.png', dpi=300, bbox_inches='tight')
     plt.close()
-
 
 def plot_model_performance_per_scenario(scenario_name):
     """
@@ -196,6 +287,9 @@ def plot_model_performance_per_scenario(scenario_name):
     scenario_name : str
         Название сценария
     """
+    if DEBUG:
+        print(f"Обработка сценария: {scenario_name}")
+    
     # Загружаем данные для всех моделей
     threshold_df = load_results(scenario_name, 'threshold')
     qlearning_df = load_results(scenario_name, 'qlearning')
@@ -260,8 +354,11 @@ def plot_model_performance_per_scenario(scenario_name):
     plt.tight_layout()
     plt.subplots_adjust(top=0.93)
     plt.savefig(f'plots/{scenario_name}_latency_jitter.png', dpi=300, bbox_inches='tight')
-    plt.close()
     
+    if DEBUG:
+        print(f"График сохранен: plots/{scenario_name}_latency_jitter.png")
+    
+    plt.close()
     
 def plot_energy_comparison(scenario_name):
     """
@@ -311,75 +408,13 @@ def plot_energy_comparison(scenario_name):
     
     plt.tight_layout()
     plt.savefig(f'plots/{scenario_name}_energy.png', dpi=300, bbox_inches='tight')
+    
+    if DEBUG:
+        print(f"График сохранен: plots/{scenario_name}_energy.png")
+    
     plt.close()
 
-
-def plot_energy_detailed(scenario_name):
-    """
-    Создает график энергопотребления с отдельными подграфиками для каждой модели,
-    аналогично графикам задержки/джиттера
-    
-    Параметры:
-    ----------
-    scenario_name : str
-        Название сценария
-    """
-    # Загружаем данные для всех моделей
-    threshold_df = load_results(scenario_name, 'threshold')
-    qlearning_df = load_results(scenario_name, 'qlearning')
-    hybrid_df = load_results(scenario_name, 'hybrid')
-    
-    if threshold_df is None or qlearning_df is None or hybrid_df is None:
-        print(f"Недостаточно данных для построения графиков энергопотребления для сценария {scenario_name}")
-        return
-    
-    # Русские названия сценариев
-    scenario_display_names = {
-        'critical': 'Критический',
-        'standard': 'Стандартный',
-        'mixed': 'Смешанный',
-        'dynamic': 'Динамический',
-        'limited_resources': 'Ограниченные ресурсы'
-    }
-    
-    scenario_title = scenario_display_names.get(scenario_name, scenario_name)
-    
-    # График энергопотребления с отдельными подграфиками
-    plt.figure(figsize=(12, 10))
-    
-    # Подграфик для пороговой модели
-    plt.subplot(3, 1, 1)
-    plt.plot(threshold_df['time'], threshold_df['energy_consumption'], color=COLOR_THRESHOLD, linewidth=2)
-    plt.title(f'Энергопотребление: Пороговая модель', fontsize=12)
-    plt.ylabel('Энергопотребление (Вт)', fontsize=10)
-    plt.grid(True, linestyle='--', alpha=0.7)
-    
-    # Подграфик для Q-Learning модели
-    plt.subplot(3, 1, 2)
-    plt.plot(qlearning_df['time'], qlearning_df['energy_consumption'], color=COLOR_QLEARNING, linewidth=2)
-    plt.title(f'Энергопотребление: Q-Learning модель', fontsize=12)
-    plt.ylabel('Энергопотребление (Вт)', fontsize=10)
-    plt.grid(True, linestyle='--', alpha=0.7)
-    
-    # Подграфик для гибридной модели
-    plt.subplot(3, 1, 3)
-    plt.plot(hybrid_df['time'], hybrid_df['energy_consumption'], color=COLOR_HYBRID, linewidth=2)
-    plt.title(f'Энергопотребление: Гибридная модель', fontsize=12)
-    plt.xlabel('Время (такты)', fontsize=10)
-    plt.ylabel('Энергопотребление (Вт)', fontsize=10)
-    plt.grid(True, linestyle='--', alpha=0.7)
-    
-    # Общий заголовок
-    plt.suptitle(f'Энергопотребление для сценария: {scenario_title}', 
-                 fontsize=14, fontweight='bold', y=0.98)
-    
-    plt.tight_layout()
-    plt.subplots_adjust(top=0.93)
-    plt.savefig(f'plots/{scenario_name}_energy_detailed.png', dpi=300, bbox_inches='tight')
-    plt.close()
-
-
-def plot_resource_utilization(scenario_name):
+# def plot_resource_utilization(scenario_name):
     """
     Создает графики утилизации CPU и RAM для всех моделей
     
@@ -395,6 +430,12 @@ def plot_resource_utilization(scenario_name):
     
     if threshold_df is None or qlearning_df is None or hybrid_df is None:
         print(f"Недостаточно данных для построения графиков утилизации ресурсов для сценария {scenario_name}")
+        return
+    
+    # Убедимся, что нужные колонки присутствуют
+    required_columns = ['time', 'cpu_utilization', 'ram_utilization']
+    if not all(col in threshold_df.columns for col in required_columns):
+        print(f"Отсутствуют необходимые колонки в данных для сценария {scenario_name}")
         return
     
     # Русские названия сценариев
@@ -445,8 +486,11 @@ def plot_resource_utilization(scenario_name):
     plt.tight_layout()
     plt.subplots_adjust(top=0.92)
     plt.savefig(f'plots/{scenario_name}_resource_utilization.png', dpi=300, bbox_inches='tight')
+    
+    if DEBUG:
+        print(f"График сохранен: plots/{scenario_name}_resource_utilization.png")
+    
     plt.close()
-
 
 def generate_summary_table():
     """
@@ -454,7 +498,7 @@ def generate_summary_table():
     для всех моделей и всех сценариев
     """
     # Список всех summary файлов
-    summary_files = glob.glob('results/*_summary.csv')
+    summary_files = find_summary_files()
     
     if not summary_files:
         print("Файлы с результатами не найдены")
@@ -466,6 +510,8 @@ def generate_summary_table():
         try:
             data = pd.read_csv(file)
             all_data.append(data)
+            if DEBUG:
+                print(f"Загружены данные из {file}, {len(data)} строк")
         except Exception as e:
             print(f"Ошибка при чтении файла {file}: {e}")
     
@@ -482,15 +528,36 @@ def generate_summary_table():
     if any(summary_df['metric'] == 'avg_energy'):
         key_metrics.append('avg_energy')
     
+    # Проверяем, есть ли нужные метрики
+    metrics_found = set(summary_df['metric'].unique())
+    if not any(metric in metrics_found for metric in key_metrics):
+        print(f"Не найдены ключевые метрики в данных. Доступные метрики: {metrics_found}")
+        return None
+    
     filtered_df = summary_df[summary_df['metric'].isin(key_metrics)].copy()
     
     # Создаем сводную таблицу с обработкой дубликатов
-    pivot_table = filtered_df.pivot_table(
-        index=['scenario', 'model'],
-        columns='metric',
-        values='value',
-        aggfunc='mean'
-    ).reset_index()
+    try:
+        pivot_table = filtered_df.pivot_table(
+            index=['scenario', 'model'],
+            columns='metric',
+            values='value',
+            aggfunc='mean'
+        ).reset_index()
+        
+        if DEBUG:
+            print("Создана сводная таблица данных")
+    except Exception as e:
+        print(f"Ошибка при создании сводной таблицы: {e}")
+        # Возможные проблемы с данными, попробуем показать их структуру
+        if DEBUG:
+            print("Структура доступных данных:")
+            print(filtered_df.head())
+            print("\nУникальные значения в ключевых столбцах:")
+            print("Метрики:", filtered_df['metric'].unique())
+            print("Сценарии:", filtered_df['scenario'].unique())
+            print("Модели:", filtered_df['model'].unique())
+        return None
     
     # Добавляем данные о разделении миграций для гибридной модели
     reactive_df = summary_df[summary_df['metric'] == 'reactive_migrations'].copy()
@@ -571,21 +638,62 @@ def generate_summary_table():
     
     # Сохраняем таблицу в CSV
     os.makedirs('results', exist_ok=True)
-    pivot_table.to_csv('results/comparative_results.csv', index=False)
+    try:
+        pivot_table.to_csv('results/comparative_results.csv', index=False)
+        if DEBUG:
+            print("Сводная таблица сохранена в results/comparative_results.csv")
+    except Exception as e:
+        print(f"Ошибка при сохранении сводной таблицы: {e}")
     
     # Возвращаем таблицу для вывода в консоль
     return pivot_table
 
+def check_directories():
+    """
+    Проверка наличия нужных директорий и создание их при необходимости
+    
+    Возвращает:
+    -----------
+    bool : True, если все в порядке
+    """
+    # Создаем директории, если они не существуют
+    os.makedirs('results', exist_ok=True)
+    os.makedirs('plots', exist_ok=True)
+    
+    # Проверяем наличие файлов результатов
+    results_files = glob.glob('results/*.csv')
+    if not results_files:
+        # Проверяем файлы в корневой директории
+        root_files = glob.glob('*.csv')
+        if root_files:
+            if DEBUG:
+                print(f"Файлы найдены в корневой директории: {len(root_files)}")
+                print("Пытаемся переместить их в директорию results/...")
+            
+            # Перемещаем файлы в директорию results
+            for file in root_files:
+                try:
+                    new_path = os.path.join('results', os.path.basename(file))
+                    # Копируем файл (не перемещаем, чтобы не терять оригинал)
+                    with open(file, 'r') as f_in:
+                        with open(new_path, 'w') as f_out:
+                            f_out.write(f_in.read())
+                    if DEBUG:
+                        print(f"Файл {file} скопирован в {new_path}")
+                except Exception as e:
+                    print(f"Ошибка при копировании файла {file}: {e}")
+        else:
+            print("Предупреждение: Файлы результатов не найдены ни в 'results/', ни в корневой директории.")
+            print("Необходимо сначала запустить симуляцию.")
+            return False
+    
+    return True
 
 def main():
     """Основная функция для построения всех графиков"""
-    # Проверяем наличие директории с результатами
-    if not os.path.exists('results'):
-        print("Ошибка: Директория 'results' не найдена. Сначала запустите сценарии.")
+    # Проверяем наличие директорий и файлов
+    if not check_directories():
         return
-    
-    # Создаем директорию для графиков, если она не существует
-    os.makedirs('plots', exist_ok=True)
     
     # Список основных сценариев
     scenarios = ['critical', 'standard', 'mixed', 'dynamic', 'limited_resources']
@@ -593,23 +701,18 @@ def main():
     print("Генерация графиков и визуализаций...")
     
     # 1. График со всеми моделями и сценариями по количеству миграций
-    print("Генерация графика сравнения миграций для всех моделей...")
     plot_all_models_migrations()
     
     # 2. Графики производительности для каждого сценария
-    print("Генерация графиков производительности для каждого сценария...")
     for scenario in scenarios:
-        print(f"Обработка сценария: {scenario}")
-        
         # Графики задержки и джиттера
         plot_model_performance_per_scenario(scenario)
         
-        # Графики энергопотребления (общий и детальный)
+        # Графики энергопотребления
         plot_energy_comparison(scenario)
-        plot_energy_detailed(scenario)
         
         # Графики утилизации ресурсов
-        plot_resource_utilization(scenario)
+        # plot_resource_utilization(scenario)
     
     # 3. Создание и вывод таблицы со всеми средними значениями
     print("\nСводная таблица результатов:")

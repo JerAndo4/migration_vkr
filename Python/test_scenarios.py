@@ -1,6 +1,8 @@
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+import os
+import time
 from threshold_model import ThresholdModel
 from qlearning_model import QLearningModel
 from hybrid_model import HybridModel
@@ -9,6 +11,11 @@ from hybrid_model import HybridModel
 SIMULATION_TIME = 1000  # количество тактов моделирования
 NUM_NODES = 4          # количество узлов
 NUM_SERVICES = 20      # количество сервисов
+
+def ensure_directories():
+    """Создает необходимые директории для результатов и графиков"""
+    os.makedirs('results', exist_ok=True)
+    os.makedirs('plots', exist_ok=True)
 
 def initialize_system():
     """
@@ -60,7 +67,7 @@ def generate_standard_scenario():
         loads[t] += np.random.normal(0, 0.02, NUM_NODES)
         
         # Ограничение значений в пределах [0.5, 0.7]
-        loads[t] = np.clip(loads[t], 0.5, 0.7)
+        loads[t] = np.clip(loads[t], 0.55, 0.9)
     
     return loads
 
@@ -102,7 +109,7 @@ def generate_critical_scenario():
         
         # Ограничение значений в пределах [0.4, 0.98]
         loads[t] = np.clip(loads[t], 0.4, 0.98)
-    
+
     return loads
 
 def generate_dynamic_scenario():
@@ -138,48 +145,6 @@ def generate_dynamic_scenario():
     
     return loads
 
-def generate_periodic_scenario():
-    """
-    Генерирует сценарий с периодическими пиками нагрузки
-    
-    Возвращает:
-    -----------
-    numpy.ndarray : Матрица загрузки узлов на каждом шаге симуляции [SIMULATION_TIME, NUM_NODES]
-    """
-    # Инициализация матрицы загрузки
-    loads = np.zeros((SIMULATION_TIME, NUM_NODES))
-    
-    # Начальная загрузка (40%)
-    base_load = np.ones(NUM_NODES) * 0.4
-    
-    # Периоды пиков нагрузки для каждого узла
-    periods = [120, 150, 180, 200]
-    
-    # Генерация периодических пиков нагрузки
-    for t in range(SIMULATION_TIME):
-        for i in range(NUM_NODES):
-            # Базовая загрузка
-            loads[t, i] = base_load[i]
-            
-            # Периодические пики
-            phase = (t % periods[i]) / periods[i]
-            
-            # Создание пика в определенной фазе (нарастание и спад)
-            if phase < 0.2:  # Нарастание
-                loads[t, i] += 0.3 * (phase / 0.2)
-            elif phase < 0.3:  # Плато
-                loads[t, i] += 0.3
-            elif phase < 0.5:  # Спад
-                loads[t, i] += 0.3 * (1 - (phase - 0.3) / 0.2)
-        
-        # Добавление небольшого случайного шума
-        loads[t] += np.random.normal(0, 0.02, NUM_NODES)
-        
-        # Ограничение значений в пределах [0.35, 0.85]
-        loads[t] = np.clip(loads[t], 0.35, 0.85)
-    
-    return loads
-
 def generate_mixed_scenario():
     """
     Генерирует смешанный сценарий, комбинирующий различные типы нагрузки
@@ -209,12 +174,8 @@ def generate_mixed_scenario():
     dynamic_loads = generate_dynamic_scenario()
     loads[2*segment_size:3*segment_size] = dynamic_loads[2*segment_size:3*segment_size]
     
-    # Периодический сценарий - сегмент 4
-    periodic_loads = generate_periodic_scenario()
-    loads[3*segment_size:4*segment_size] = periodic_loads[3*segment_size:4*segment_size]
-    
-    # Комбинированный сегмент - сегмент 5
-    for t in range(4*segment_size, SIMULATION_TIME):
+    # Для сегментов 4-5 используем комбинированный подход
+    for t in range(3*segment_size, SIMULATION_TIME):
         # Добавление элементов всех сценариев
         node = t % NUM_NODES
         
@@ -232,10 +193,47 @@ def generate_mixed_scenario():
         
         # Ограничение значений в пределах [0.3, 0.95]
         loads[t] = np.clip(loads[t], 0.3, 0.95)
+
+    return loads
+
+def generate_limited_resources_scenario():
+    """
+    Генерирует сценарий с ограниченными ресурсами, когда общая нагрузка постоянно высокая
+    
+    Возвращает:
+    -----------
+    numpy.ndarray : Матрица загрузки узлов на каждом шаге симуляции [SIMULATION_TIME, NUM_NODES]
+    """
+    # Инициализация матрицы загрузки
+    loads = np.zeros((SIMULATION_TIME, NUM_NODES))
+    
+    # Начальная высокая загрузка (70-80%)
+    loads[0] = np.random.uniform(0.7, 0.8, NUM_NODES)
+    
+    # Генерация нагрузки с высоким базовым уровнем
+    for t in range(1, SIMULATION_TIME):
+        # Базовый высокий уровень нагрузки
+        for i in range(NUM_NODES):
+            period = 80 + i * 15
+            amplitude = 0.1
+            offset = i * np.pi / 3
+            
+            # Базовая загрузка + колебания
+            base_value = 0.75 + amplitude * np.sin(2 * np.pi * t / period + offset)
+            
+            # Инерция от предыдущего значения
+            inertia = 0.6
+            loads[t, i] = inertia * loads[t-1, i] + (1 - inertia) * base_value
+        
+        # Добавление случайных флуктуаций
+        loads[t] += np.random.normal(0, 0.05, NUM_NODES)
+        
+        # Ограничение значений в пределах [0.65, 0.95]
+        loads[t] = np.clip(loads[t], 0.65, 0.95)
     
     return loads
 
-def run_scenario(loads, model_name, model):
+def run_scenario(loads, model_name, model, scenario_name):
     """
     Запускает один сценарий с заданной моделью миграции
     
@@ -247,41 +245,84 @@ def run_scenario(loads, model_name, model):
         Название модели для записи в результаты
     model : object
         Экземпляр модели миграции
+    scenario_name : str
+        Название сценария
     
     Возвращает:
     -----------
     pandas.DataFrame : Результаты симуляции
     """
+    start_time = time.time()
+    
     # Инициализация системы
     node_loads, service_allocation, service_loads = initialize_system()
     model.initialize_system(node_loads, service_allocation, service_loads)
     
     # Инициализация результатов
     results = {
-        'step': [], 'model': [], 'latency': [], 'jitter': [], 
-        'energy_consumption': [], 'migration_performed': [], 'migration_success': []
+        'time': [], 'model': [], 'latency': [], 'jitter': [], 'energy_consumption': [],
+        'migration_performed': [], 'migration_success': [], 'migration_mode': [],
+        'cpu_utilization': [], 'ram_utilization': [], 'overloaded_nodes': [],
+        'predicted_overloads': [], 'migrations': []
     }
     
+    # Счетчики для отслеживания миграций
+    total_migrations = 0
+    reactive_migrations = 0
+    proactive_migrations = 0
+    
     # Запуск симуляции
-    for t in range(SIMULATION_TIME):
+    simulation_steps = min(SIMULATION_TIME, len(loads))
+    for t in range(simulation_steps):
         # Установка текущей нагрузки
         current_loads = loads[t].copy()
         
         # Обработка одного шага
         step_metrics = model.process_step(current_loads)
         
+        # Подсчет миграций
+        if step_metrics['migration_performed'] and step_metrics['migration_success']:
+            total_migrations += 1
+            if step_metrics['migration_mode'] == 'reactive':
+                reactive_migrations += 1
+            elif step_metrics['migration_mode'] == 'proactive':
+                proactive_migrations += 1
+        
         # Запись результатов
-        results['step'].append(t)
+        results['time'].append(t)
         results['model'].append(model_name)
         results['latency'].append(step_metrics['latency'])
         results['jitter'].append(step_metrics['jitter'])
-        results['energy_consumption'].append(0 if t >= len(model.metrics['energy_consumption']) else 
-                                           model.metrics['energy_consumption'][-1] if model.metrics['energy_consumption'] else 0)
+        results['energy_consumption'].append(
+            0 if t >= len(model.metrics['energy_consumption']) else model.metrics['energy_consumption'][-1]
+        )
         results['migration_performed'].append(step_metrics['migration_performed'])
         results['migration_success'].append(step_metrics['migration_success'])
+        results['migration_mode'].append(step_metrics['migration_mode'])
+        
+        # Добавление метрик системы
+        results['cpu_utilization'].append(np.mean(current_loads))
+        results['ram_utilization'].append(np.mean(current_loads) * 0.8)  # Условная метрика
+        
+        # Подсчет перегруженных узлов и прогнозов
+        overloaded_count = np.sum(current_loads > 0.75)
+        predicted_overload_count = 0
+        
+        if model_name in ['qlearning', 'hybrid']:
+            # Для моделей с прогнозированием
+            predicted_load, _ = model.q_learning_model.predict_future_load() if hasattr(model, 'q_learning_model') else (current_loads, 0)
+            predicted_overload_count = np.sum(predicted_load > 0.65)
+        
+        results['overloaded_nodes'].append(overloaded_count)
+        results['predicted_overloads'].append(predicted_overload_count)
+        results['migrations'].append(total_migrations)
     
     # Создание DataFrame из результатов
-    return pd.DataFrame(results)
+    df = pd.DataFrame(results)
+    
+    elapsed_time = time.time() - start_time
+
+    return df
 
 def run_scenarios():
     """
@@ -291,13 +332,16 @@ def run_scenarios():
     -----------
     dict : Словарь с результатами для каждого сценария
     """
+    # Проверяем и создаем директории
+    ensure_directories()
+    
     # Генерация сценариев
     scenarios = {
         'standard': generate_standard_scenario(),
         'critical': generate_critical_scenario(),
         'dynamic': generate_dynamic_scenario(),
-        'periodic': generate_periodic_scenario(),
-        'mixed': generate_mixed_scenario()
+        'mixed': generate_mixed_scenario(),
+        'limited_resources': generate_limited_resources_scenario()
     }
     
     # Инициализация моделей
@@ -309,237 +353,86 @@ def run_scenarios():
     results = {}
     
     for scenario_name, loads in scenarios.items():
+        
         # Запуск сценария для каждой модели
-        threshold_results = run_scenario(loads, 'threshold', threshold_model)
-        q_learning_results = run_scenario(loads, 'q_learning', q_learning_model)
-        hybrid_results = run_scenario(loads, 'hybrid', hybrid_model)
+        threshold_results = run_scenario(loads, 'threshold', threshold_model, scenario_name)
+        q_learning_results = run_scenario(loads, 'qlearning', q_learning_model, scenario_name)
+        hybrid_results = run_scenario(loads, 'hybrid', hybrid_model, scenario_name)
         
         # Объединение результатов
         scenario_results = pd.concat([threshold_results, q_learning_results, hybrid_results])
         
-        # Сохранение результатов
-        scenario_results.to_csv(f'{scenario_name}_results.csv', index=False)
+        # Сохранение результатов для каждой модели отдельно
+        threshold_results.to_csv(f'results/{scenario_name}_threshold.csv', index=False)
+        q_learning_results.to_csv(f'results/{scenario_name}_qlearning.csv', index=False)
+        hybrid_results.to_csv(f'results/{scenario_name}_hybrid.csv', index=False)
+        
+        # Сохранение общих результатов
+        scenario_results.to_csv(f'results/{scenario_name}_results.csv', index=False)
         
         # Сбор сводных метрик
-        summary = {}
-        for model_name in ['threshold', 'q_learning', 'hybrid']:
-            model_data = scenario_results[scenario_results['model'] == model_name]
+        summary = []
+        for model_name, model in [('threshold', threshold_model), ('qlearning', q_learning_model), ('hybrid', hybrid_model)]:
+            model_metrics = model.get_metrics()
             
-            summary[model_name] = {
-                'avg_latency': model_data['latency'].mean(),
-                'avg_jitter': model_data['jitter'].mean(),
-                'avg_energy': model_data['energy_consumption'].mean(),
-                'migrations_count': model_data['migration_performed'].sum(),
-                'success_rate': (model_data['migration_success'].sum() / 
-                                max(1, model_data['migration_performed'].sum()))
+            # Базовые метрики для всех моделей
+            model_summary = {
+                'scenario': scenario_name,
+                'model': model_name,
+                'avg_migrations': model_metrics['migrations_count'] / max(1, SIMULATION_TIME),
+                'total_migrations': model_metrics['migrations_count'],
+                'avg_latency': model_metrics['avg_latency'],
+                'avg_jitter': model_metrics['avg_jitter'],
+                'avg_cpu': np.mean(scenario_results['cpu_utilization']),
+                'avg_ram': np.mean(scenario_results['ram_utilization']),
+                'avg_energy': model_metrics['avg_energy_consumption'],
+                'max_latency': max(threshold_results['latency'].max(), q_learning_results['latency'].max(), hybrid_results['latency'].max()),
+                'max_jitter': max(threshold_results['jitter'].max(), q_learning_results['jitter'].max(), hybrid_results['jitter'].max())
             }
+            
+            # Добавление специфичных метрик для гибридной модели
+            if model_name == 'hybrid':
+                model_summary['reactive_migrations'] = model_metrics['reactive_migrations']
+                model_summary['proactive_migrations'] = model_metrics['proactive_migrations']
+            
+            # Добавляем в список
+            summary.append(model_summary)
+        
+        # Сохранение сводных метрик в формате, удобном для plot_results.py
+        summary_df = pd.DataFrame(summary)
+        
+        # Преобразуем из широкого формата в длинный для совместимости
+        summary_long = []
+        for _, row in summary_df.iterrows():
+            model = row['model']
+            scenario = row['scenario']
+            
+            for metric, value in row.items():
+                if metric not in ['model', 'scenario']:
+                    summary_long.append({
+                        'scenario': scenario,
+                        'model': model,
+                        'metric': metric,
+                        'value': value
+                    })
         
         # Сохранение сводных метрик
-        pd.DataFrame(summary).T.to_csv(f'{scenario_name}_summary.csv')
+        pd.DataFrame(summary_long).to_csv(f'results/{scenario_name}_summary.csv', index=False)
         
         # Добавление результатов в общий словарь
         results[scenario_name] = scenario_results
+        
     
     return results
 
-def plot_results(scenario_name, results_df):
-    """
-    Визуализирует результаты симуляции
-    
-    Параметры:
-    ----------
-    scenario_name : str
-        Название сценария
-    results_df : pandas.DataFrame
-        Результаты симуляции
-    """
-    # Создание графиков
-    plt.figure(figsize=(15, 12))
-    plt.suptitle(f'Результаты симуляции для сценария "{scenario_name}"', fontsize=16)
-    
-    # Подготовка данных по моделям
-    models = ['threshold', 'q_learning', 'hybrid']
-    colors = ['r', 'g', 'b']
-    
-    # График задержки
-    plt.subplot(2, 2, 1)
-    for i, model in enumerate(models):
-        model_data = results_df[results_df['model'] == model]
-        plt.plot(model_data['step'], model_data['latency'], color=colors[i], alpha=0.7, label=model)
-    plt.title('Задержка')
-    plt.xlabel('Шаг симуляции')
-    plt.ylabel('Задержка (мс)')
-    plt.legend()
-    plt.grid(True, alpha=0.3)
-    
-    # График джиттера
-    plt.subplot(2, 2, 2)
-    for i, model in enumerate(models):
-        model_data = results_df[results_df['model'] == model]
-        plt.plot(model_data['step'], model_data['jitter'], color=colors[i], alpha=0.7, label=model)
-    plt.title('Джиттер')
-    plt.xlabel('Шаг симуляции')
-    plt.ylabel('Джиттер (мс)')
-    plt.legend()
-    plt.grid(True, alpha=0.3)
-    
-    # График энергопотребления
-    plt.subplot(2, 2, 3)
-    for i, model in enumerate(models):
-        model_data = results_df[results_df['model'] == model]
-        plt.plot(model_data['step'], model_data['energy_consumption'], color=colors[i], alpha=0.7, label=model)
-    plt.title('Энергопотребление')
-    plt.xlabel('Шаг симуляции')
-    plt.ylabel('Энергопотребление (условные единицы)')
-    plt.legend()
-    plt.grid(True, alpha=0.3)
-    
-    # График миграций
-    plt.subplot(2, 2, 4)
-    for i, model in enumerate(models):
-        model_data = results_df[results_df['model'] == model]
-        # Накопительная сумма миграций
-        migrations = model_data['migration_performed'].cumsum()
-        plt.plot(model_data['step'], migrations, color=colors[i], alpha=0.7, label=model)
-    plt.title('Количество миграций (накопительно)')
-    plt.xlabel('Шаг симуляции')
-    plt.ylabel('Количество миграций')
-    plt.legend()
-    plt.grid(True, alpha=0.3)
-    
-    # Сохранение графиков
-    plt.tight_layout(rect=[0, 0, 1, 0.95])
-    plt.savefig(f'{scenario_name}_plots.png', dpi=150)
-    plt.close()
-
-def plot_summary(scenarios):
-    """
-    Визуализирует сводные результаты по всем сценариям
-    
-    Параметры:
-    ----------
-    scenarios : list
-        Список названий сценариев
-    """
-    # Загрузка сводных данных
-    summary_data = {}
-    
-    for scenario in scenarios:
-        summary_df = pd.read_csv(f'{scenario}_summary.csv', index_col=0)
-        summary_data[scenario] = summary_df
-    
-    # Подготовка данных для графиков
-    metrics = ['avg_latency', 'avg_jitter', 'avg_energy', 'migrations_count', 'success_rate']
-    metric_names = ['Средняя задержка (мс)', 'Средний джиттер (мс)', 'Среднее энергопотребление', 
-                    'Количество миграций', 'Успешность миграций (%)']
-    
-    models = ['threshold', 'q_learning', 'hybrid']
-    model_colors = {'threshold': 'r', 'q_learning': 'g', 'hybrid': 'b'}
-    
-    # Создание графиков для каждой метрики
-    plt.figure(figsize=(15, 18))
-    plt.suptitle('Сводные результаты по всем сценариям', fontsize=16)
-    
-    for i, (metric, metric_name) in enumerate(zip(metrics, metric_names)):
-        plt.subplot(3, 2, i+1)
-        
-        # Подготовка данных для графика
-        x = np.arange(len(scenarios))
-        width = 0.25
-        
-        for j, model in enumerate(models):
-            values = [summary_data[scenario].loc[model, metric] for scenario in scenarios]
-            
-            # Для процентов - умножаем на 100
-            if metric == 'success_rate':
-                values = [val * 100 for val in values]
-                
-            plt.bar(x + (j - 1) * width, values, width, label=model, color=model_colors[model], alpha=0.7)
-        
-        plt.title(metric_name)
-        plt.xticks(x, scenarios)
-        plt.legend()
-        plt.grid(True, alpha=0.3)
-    
-    # Сохранение графика
-    plt.tight_layout(rect=[0, 0, 1, 0.95])
-    plt.savefig('summary_plots.png', dpi=150)
-    plt.close()
-    
-    # Дополнительный график для гибридной модели - соотношение реактивных и проактивных миграций
-    # Для этого нам нужно получить эти данные из файлов результатов
-    hybrid_migrations = {}
-    
-    for scenario in scenarios:
-        results_df = pd.read_csv(f'{scenario}_results.csv')
-        hybrid_data = results_df[results_df['model'] == 'hybrid']
-        
-        # Подсчет миграций по режимам
-        reactive_count = 0
-        proactive_count = 0
-        
-        for i, row in hybrid_data.iterrows():
-            if row['migration_performed']:
-                if 'migration_mode' in row and row['migration_mode'] == 'reactive':
-                    reactive_count += 1
-                else:
-                    proactive_count += 1
-        
-        hybrid_migrations[scenario] = {
-            'reactive': reactive_count,
-            'proactive': proactive_count,
-            'total': reactive_count + proactive_count
-        }
-    
-    # Вывод статистики по гибридной модели для каждого сценария
-    print("Статистика миграций по сценариям:")
-    for scenario in scenarios:
-        stats = hybrid_migrations[scenario]
-        print(f"Сценарий: {scenario}")
-        print(f"  Пороговая модель: {summary_data[scenario].loc['threshold', 'migrations_count']}")
-        print(f"  Q-Learning модель: {summary_data[scenario].loc['q_learning', 'migrations_count']}")
-        print(f"  Гибридная модель (всего): {stats['total']}")
-        print(f"    - Реактивные: {stats['reactive']}")
-        print(f"    - Проактивные: {stats['proactive']}")
-    
-    # Создание графика соотношения реактивных и проактивных миграций
-    plt.figure(figsize=(12, 7))
-    plt.title('Соотношение реактивных и проактивных миграций в гибридной модели', fontsize=14)
-    
-    x = np.arange(len(scenarios))
-    width = 0.35
-    
-    reactive_values = [hybrid_migrations[scenario]['reactive'] for scenario in scenarios]
-    proactive_values = [hybrid_migrations[scenario]['proactive'] for scenario in scenarios]
-    
-    plt.bar(x - width/2, reactive_values, width, label='Реактивные', color='r', alpha=0.7)
-    plt.bar(x + width/2, proactive_values, width, label='Проактивные', color='g', alpha=0.7)
-    
-    plt.xlabel('Сценарии')
-    plt.ylabel('Количество миграций')
-    plt.xticks(x, scenarios)
-    plt.legend()
-    plt.grid(True, alpha=0.3)
-    
-    plt.tight_layout()
-    plt.savefig('hybrid_migrations_ratio.png', dpi=150)
-    plt.close()
-
 def main():
     """
-    Основная функция для запуска всего процесса симуляции и визуализации
+    Основная функция для запуска всего процесса симуляции
     """
     # Запуск сценариев
     results = run_scenarios()
     
-    # Визуализация результатов по каждому сценарию
-    for scenario_name, scenario_results in results.items():
-        plot_results(scenario_name, scenario_results)
-    
-    # Визуализация сводных результатов
-    plot_summary(list(results.keys()))
-    
-    print("Симуляция и визуализация завершены. Результаты сохранены в файлы.")
+    return results
 
 if __name__ == "__main__":
     main()
