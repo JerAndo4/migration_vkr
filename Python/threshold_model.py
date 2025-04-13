@@ -6,7 +6,7 @@ class ThresholdModel:
     """
     Модель миграции на основе пороговых значений с марковскими процессами
     """
-    def __init__(self, num_nodes=4, num_services=20, threshold=0.9, alpha=0.5, beta=2, 
+    def __init__(self, num_nodes=4, num_services=20, threshold=0.75, alpha=0.5, beta=2, 
                  target_load=0.6, history_window=10):
         """
         Инициализация модели
@@ -199,7 +199,7 @@ class ThresholdModel:
     
     def perform_migration(self, service_index, target_node):
         """
-        Выполнение миграции сервиса
+        Выполнение миграции сервиса с корректным учетом энергопотребления
         
         Параметры:
         ----------
@@ -216,11 +216,10 @@ class ThresholdModel:
         source_node = self.service_allocation[service_index]
         service_load = self.service_loads[service_index]
         
-        # Вычисляем стоимость миграции (зависит от загрузки узлов и сложности сервиса)
+        # Вычисляем коэффициент сложности миграции
         migration_cost = service_load * (self.node_loads[source_node] + self.node_loads[target_node]) / 2
         
-        # Вероятность успешной миграции (обратно пропорциональна стоимости)
-        # Более высокая надежность для пороговой модели
+        # Вероятность успешной миграции (обратно пропорциональна сложности)
         success_prob = max(0.85, 1.0 - migration_cost * 0.3)
         
         # Определяем успешность миграции
@@ -234,10 +233,10 @@ class ThresholdModel:
             # Обновляем распределение сервисов
             self.service_allocation[service_index] = target_node
             
-            # Вычисляем задержку миграции - существенно увеличиваем для пороговой модели
-            latency = 80 + migration_cost * 200  # высокая базовая задержка + вариативная часть
+            # Вычисляем задержку миграции - высокая для пороговой модели
+            latency = 80 + migration_cost * 200  # мс
             
-            # Обновляем метрики
+            # Обновляем метрики задержки и джиттера
             self.metrics['latency'].append(latency)
             if len(self.metrics['latency']) > 1:
                 jitter = abs(self.metrics['latency'][-1] - self.metrics['latency'][-2])
@@ -245,8 +244,14 @@ class ThresholdModel:
             else:
                 self.metrics['jitter'].append(0)
                 
-            # Высокое энергопотребление для пороговой модели
-            self.metrics['energy_consumption'].append(migration_cost * 150)
+            # Вычисляем дополнительное энергопотребление при миграции в кВт·ч
+            # Примерно 1.5 кВт·ч на единицу migration_cost
+            migration_energy = migration_cost * 1.5
+            
+            # Обновляем последнее значение энергопотребления, добавляя к базовому
+            if len(self.metrics['energy_consumption']) > 0:
+                self.metrics['energy_consumption'][-1] += migration_energy
+                
             self.metrics['migrations_count'] += 1
         else:
             # Миграция не выполнена
@@ -258,6 +263,11 @@ class ThresholdModel:
                 self.metrics['jitter'].append(jitter)
             else:
                 self.metrics['jitter'].append(0)
+                
+            # Добавляем небольшое энергопотребление за попытку миграции
+            failed_migration_energy = migration_cost * 0.3
+            if len(self.metrics['energy_consumption']) > 0:
+                self.metrics['energy_consumption'][-1] += failed_migration_energy
                 
             self.metrics['failed_migrations'] += 1
         
@@ -288,7 +298,7 @@ class ThresholdModel:
         # Определяем порог для реакции: если загрузка достигает 90% от установленного порога
         # reactive_threshold = self.threshold * 0.90
         # hysteresis_margin = 0.05
-        overloaded = node_loads  # >= reactive_threshold
+        overloaded = node_loads  >= self.threshold
         
         if np.any(overloaded):
             # Выбираем узел с наибольшей загрузкой
@@ -300,7 +310,7 @@ class ThresholdModel:
     
     def process_step(self, new_loads=None):
         """
-        Обработка одного шага симуляции
+        Обработка одного шага симуляции с корректным учетом энергопотребления
         
         Параметры:
         ----------
@@ -311,12 +321,30 @@ class ThresholdModel:
         -----------
         dict : Метрики производительности за данный шаг
         """
+
+        if 'energy_consumption' not in self.metrics:
+            self.metrics['energy_consumption'] = []
+        if 'latency' not in self.metrics:
+            self.metrics['latency'] = []
+        if 'jitter' not in self.metrics:
+            self.metrics['jitter'] = []
+
         if new_loads is not None:
             self.node_loads = new_loads.copy()
         
+        # Всегда добавляем базовое энергопотребление
+        baseline_power = 0.05  # кВт базовая мощность на узел
+        load_factor = sum(self.node_loads) / self.num_nodes  # средняя загрузка
+        baseline_energy = baseline_power * self.num_nodes * load_factor * (5/60)  # кВт·ч за такт
+        self.metrics['energy_consumption'].append(baseline_energy)
+        
+        # Всегда добавляем базовую задержку
+        base_latency = 5.0  # мс
+
         # Проверяем превышение порога
         threshold_exceeded, overloaded_node = self.check_threshold()
         
+        # Инициализация метрик шага
         step_metrics = {
             'latency': 0,
             'jitter': 0,
@@ -324,6 +352,20 @@ class ThresholdModel:
             'migration_success': False,
             'migration_mode': 'reactive'
         }
+        
+        # Расчет базового энергопотребления
+        # Для пороговой модели нужно больше ресурсов на постоянный мониторинг
+        baseline_power = 0.05  # кВт базовая мощность на узел
+        load_factor = sum(self.node_loads) / self.num_nodes  # средняя загрузка
+        
+        # Пересчитываем в кВт·ч за один такт (5 минут = 1/12 часа)
+        baseline_energy = baseline_power * self.num_nodes * load_factor * (5/60)
+        
+        # Добавляем базовое энергопотребление за этот шаг
+        self.metrics['energy_consumption'].append(baseline_energy)
+        
+        # Базовая задержка обработки запросов (даже без миграций)
+        base_latency = 5.0  # мс
         
         if threshold_exceeded:
             # Выбираем сервис для миграции
@@ -333,17 +375,47 @@ class ThresholdModel:
                 # Выбираем целевой узел
                 target_node = self.select_target_node(overloaded_node, self.service_loads[service_index])
                 
-                # Выполняем миграцию
-                success, latency = self.perform_migration(service_index, target_node)
+                # Проверяем, что миграция не происходит на тот же узел
+                if target_node != overloaded_node:
+                    # Выполняем миграцию
+                    success, latency = self.perform_migration(service_index, target_node)
+                    
+                    step_metrics['latency'] = latency
+                    step_metrics['migration_performed'] = True
+                    step_metrics['migration_success'] = success
+                    
+                    if len(self.metrics['jitter']) > 0:
+                        step_metrics['jitter'] = self.metrics['jitter'][-1]
+                else:
+                    # Если целевой узел тот же самый, добавляем базовые метрики
+                    self.metrics['latency'].append(base_latency)
+                    
+                    if len(self.metrics['latency']) > 1:
+                        jitter = abs(self.metrics['latency'][-1] - self.metrics['latency'][-2])
+                        self.metrics['jitter'].append(jitter)
+                    else:
+                        self.metrics['jitter'].append(0)
+            else:
+                # Если подходящий сервис не найден, добавляем базовые метрики
+                self.metrics['latency'].append(base_latency)
                 
-                step_metrics['latency'] = latency
-                step_metrics['migration_performed'] = True
-                step_metrics['migration_success'] = success
-                
-                if len(self.metrics['jitter']) > 0:
-                    step_metrics['jitter'] = self.metrics['jitter'][-1]
+                if len(self.metrics['latency']) > 1:
+                    jitter = abs(self.metrics['latency'][-1] - self.metrics['latency'][-2])
+                    self.metrics['jitter'].append(jitter)
+                else:
+                    self.metrics['jitter'].append(0)
+        else:
+            # Если миграция не требуется, добавляем базовые метрики
+            self.metrics['latency'].append(base_latency)
+            
+            if len(self.metrics['latency']) > 1:
+                jitter = abs(self.metrics['latency'][-1] - self.metrics['latency'][-2])
+                self.metrics['jitter'].append(jitter)
+            else:
+                self.metrics['jitter'].append(0)
         
         return step_metrics
+
     
     def get_metrics(self):
         """

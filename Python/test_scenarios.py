@@ -49,15 +49,15 @@ def generate_standard_scenario():
     # Инициализация матрицы загрузки
     loads = np.zeros((SIMULATION_TIME, NUM_NODES))
     
-    # Начальная загрузка (50%)
-    base_load = np.ones(NUM_NODES) * 0.5
+    # Начальная загрузка в центре желаемого диапазона [0.6, 0.9]
+    base_load = np.ones(NUM_NODES) * 0.7
     
-    # Генерация плавных колебаний в пределах 50-70%
+    # Генерация плавных колебаний в пределах [0.6, 0.9]
     for t in range(SIMULATION_TIME):
         # Синусоидальные колебания с различными периодами для каждого узла
         for i in range(NUM_NODES):
             period = 100 + i * 20  # разные периоды для разных узлов
-            amplitude = 0.1  # амплитуда колебаний
+            amplitude = 0.15  # амплитуда колебаний
             offset = i * np.pi / 4  # фазовый сдвиг
             
             # Базовая загрузка + колебания
@@ -66,8 +66,8 @@ def generate_standard_scenario():
         # Добавление небольшого случайного шума
         loads[t] += np.random.normal(0, 0.02, NUM_NODES)
         
-        # Ограничение значений в пределах [0.5, 0.7]
-        loads[t] = np.clip(loads[t], 0.55, 0.9)
+        # Ограничение значений в пределах [0.6, 0.9]
+        loads[t] = np.clip(loads[t], 0.6, 0.9)
     
     return loads
 
@@ -142,6 +142,17 @@ def generate_dynamic_scenario():
         
         # Ограничение значений в пределах [0.3, 0.85]
         loads[t] = np.clip(loads[t], 0.3, 0.85)
+
+    # Добавляем несколько пиков нагрузки для стимуляции миграций
+    for i in range(5):
+        start_time = np.random.randint(50, SIMULATION_TIME - 100)
+        duration = np.random.randint(10, 30)
+        node = np.random.randint(0, NUM_NODES)
+        
+        # Увеличиваем нагрузку для вызова миграций
+        loads[start_time:start_time+duration, node] = np.clip(
+            loads[start_time:start_time+duration, node] + 0.3, 0, 0.95
+        )
     
     return loads
 
@@ -235,7 +246,8 @@ def generate_limited_resources_scenario():
 
 def run_scenario(loads, model_name, model, scenario_name):
     """
-    Запускает один сценарий с заданной моделью миграции
+    Запускает один сценарий с заданной моделью миграции и обеспечивает
+    корректный сбор всех метрик производительности
     
     Параметры:
     ----------
@@ -258,18 +270,32 @@ def run_scenario(loads, model_name, model, scenario_name):
     node_loads, service_allocation, service_loads = initialize_system()
     model.initialize_system(node_loads, service_allocation, service_loads)
     
-    # Инициализация результатов
+    # Инициализация результатов - все массивы должны быть инициализированы здесь
     results = {
-        'time': [], 'model': [], 'latency': [], 'jitter': [], 'energy_consumption': [],
-        'migration_performed': [], 'migration_success': [], 'migration_mode': [],
-        'cpu_utilization': [], 'ram_utilization': [], 'overloaded_nodes': [],
-        'predicted_overloads': [], 'migrations': []
+        'time': [], 
+        'model': [], 
+        'latency': [], 
+        'jitter': [], 
+        'energy_consumption': [],
+        'migration_performed': [], 
+        'migration_success': [], 
+        'migration_mode': [],
+        'cpu_utilization': [], 
+        'ram_utilization': [], 
+        'overloaded_nodes': [],
+        'predicted_overloads': [], 
+        'migrations': []
     }
+    
+    # Добавим cumulative_energy только если планируем его использовать
+    if 'cumulative_energy' not in results:
+        results['cumulative_energy'] = []
     
     # Счетчики для отслеживания миграций
     total_migrations = 0
     reactive_migrations = 0
     proactive_migrations = 0
+    cumulative_energy = 0
     
     # Запуск симуляции
     simulation_steps = min(SIMULATION_TIME, len(loads))
@@ -281,26 +307,40 @@ def run_scenario(loads, model_name, model, scenario_name):
         step_metrics = model.process_step(current_loads)
         
         # Подсчет миграций
-        if step_metrics['migration_performed'] and step_metrics['migration_success']:
+        if step_metrics.get('migration_performed', False) and step_metrics.get('migration_success', False):
             total_migrations += 1
-            if step_metrics['migration_mode'] == 'reactive':
+            if step_metrics.get('migration_mode') == 'reactive':
                 reactive_migrations += 1
-            elif step_metrics['migration_mode'] == 'proactive':
+            elif step_metrics.get('migration_mode') == 'proactive':
                 proactive_migrations += 1
         
-        # Запись результатов
+        # Получение текущих метрик из модели
+        current_energy = 0
+        current_latency = 0
+        current_jitter = 0
+        
+        # Безопасное получение метрик
+        if hasattr(model, 'metrics'):
+            if 'energy_consumption' in model.metrics and len(model.metrics['energy_consumption']) > 0:
+                current_energy = model.metrics['energy_consumption'][-1]
+            if 'latency' in model.metrics and len(model.metrics['latency']) > 0:
+                current_latency = model.metrics['latency'][-1]
+            if 'jitter' in model.metrics and len(model.metrics['jitter']) > 0:
+                current_jitter = model.metrics['jitter'][-1]
+        
+        # Обновление кумулятивного энергопотребления
+        cumulative_energy += current_energy
+        
+        # Запись всех результатов для текущего шага - все массивы должны пополняться здесь
         results['time'].append(t)
         results['model'].append(model_name)
-        results['latency'].append(step_metrics['latency'])
-        results['jitter'].append(step_metrics['jitter'])
-        results['energy_consumption'].append(
-            0 if t >= len(model.metrics['energy_consumption']) else model.metrics['energy_consumption'][-1]
-        )
-        results['migration_performed'].append(step_metrics['migration_performed'])
-        results['migration_success'].append(step_metrics['migration_success'])
-        results['migration_mode'].append(step_metrics['migration_mode'])
-        
-        # Добавление метрик системы
+        results['latency'].append(current_latency)
+        results['jitter'].append(current_jitter)
+        results['energy_consumption'].append(current_energy)
+        results['cumulative_energy'].append(cumulative_energy)
+        results['migration_performed'].append(step_metrics.get('migration_performed', False))
+        results['migration_success'].append(step_metrics.get('migration_success', False))
+        results['migration_mode'].append(step_metrics.get('migration_mode', None))
         results['cpu_utilization'].append(np.mean(current_loads))
         results['ram_utilization'].append(np.mean(current_loads) * 0.8)  # Условная метрика
         
@@ -317,10 +357,60 @@ def run_scenario(loads, model_name, model, scenario_name):
         results['predicted_overloads'].append(predicted_overload_count)
         results['migrations'].append(total_migrations)
     
+    # Проверка, что все массивы имеют одинаковую длину
+    lengths = {key: len(value) for key, value in results.items() if isinstance(value, list)}
+    if len(set(lengths.values())) > 1:
+        print(f"ОШИБКА: Разная длина массивов в результатах: {lengths}")
+        # Обрежем все массивы до минимальной длины
+        min_length = min(lengths.values())
+        for key in results:
+            if isinstance(results[key], list) and len(results[key]) > min_length:
+                results[key] = results[key][:min_length]
+    
     # Создание DataFrame из результатов
     df = pd.DataFrame(results)
     
+    # Добавляем скользящее среднее для сглаживания графиков
+    window_size = 5
+    if len(df) >= window_size:
+        df['smooth_latency'] = df['latency'].rolling(window=window_size, min_periods=1).mean()
+        df['smooth_jitter'] = df['jitter'].rolling(window=window_size, min_periods=1).mean()
+        df['smooth_energy'] = df['energy_consumption'].rolling(window=window_size, min_periods=1).mean()
+    
     elapsed_time = time.time() - start_time
+    print(f"Симуляция для {model_name} в сценарии {scenario_name} завершена за {elapsed_time:.2f} секунд")
+    print(f"  Всего миграций: {total_migrations}")
+    if model_name == 'hybrid':
+        print(f"  Реактивных миграций: {reactive_migrations}")
+        print(f"  Проактивных миграций: {proactive_migrations}")
+    print(f"  Общее энергопотребление: {cumulative_energy:.2f} кВт·ч")
+
+    return df
+    
+    # Создание DataFrame из результатов
+    df = pd.DataFrame(results)
+    
+    # Добавляем скользящее среднее для сглаживания графиков
+    window_size = 5
+    df['smooth_latency'] = df['latency'].rolling(window=window_size, min_periods=1).mean()
+    df['smooth_jitter'] = df['jitter'].rolling(window=window_size, min_periods=1).mean()
+    df['smooth_energy'] = df['energy_consumption'].rolling(window=window_size, min_periods=1).mean()
+    
+    # Расчет энергоэффективности (отношение задержки к энергопотреблению)
+    # Более низкое значение означает более высокую эффективность
+    df['energy_efficiency'] = df['latency'] / (df['energy_consumption'] + 0.001)  # Избегаем деления на ноль
+    
+    # Запись статистики в логи
+    elapsed_time = time.time() - start_time
+    # if DEBUG:
+    #     print(f"Симуляция для {model_name} в сценарии {scenario_name} завершена за {elapsed_time:.2f} секунд")
+    #     print(f"  Всего миграций: {total_migrations}")
+    #     if model_name == 'hybrid':
+    #         print(f"  Реактивных миграций: {reactive_migrations}")
+    #         print(f"  Проактивных миграций: {proactive_migrations}")
+    #     print(f"  Общее энергопотребление: {cumulative_energy:.2f} кВт·ч")
+    #     print(f"  Средняя задержка: {df['latency'].mean():.2f} мс")
+    #     print(f"  Средний джиттер: {df['jitter'].mean():.2f} мс")
 
     return df
 

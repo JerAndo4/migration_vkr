@@ -281,6 +281,7 @@ def plot_all_models_migrations():
 def plot_model_performance_per_scenario(scenario_name):
     """
     График 2: Для каждого сценария создает один график с задержкой и джиттером для каждой модели
+    с улучшенной обработкой непрерывности данных
     
     Параметры:
     ----------
@@ -290,7 +291,7 @@ def plot_model_performance_per_scenario(scenario_name):
     if DEBUG:
         print(f"Обработка сценария: {scenario_name}")
     
-    # Загружаем данные для всех моделей
+    # Загружаем данные для всех моделей с обработкой ошибок
     threshold_df = load_results(scenario_name, 'threshold')
     qlearning_df = load_results(scenario_name, 'qlearning')
     hybrid_df = load_results(scenario_name, 'hybrid')
@@ -316,43 +317,198 @@ def plot_model_performance_per_scenario(scenario_name):
     
     scenario_title = scenario_display_names.get(scenario_name, scenario_name)
     
-    # График с задержкой и джиттером для каждой модели
-    plt.figure(figsize=(15, 10))
+    # Проверяем наличие колонок
+    expected_columns = ['time', 'latency', 'jitter']
+    all_data_present = all(col in threshold_df.columns and col in qlearning_df.columns and col in hybrid_df.columns 
+                          for col in expected_columns)
+    
+    if not all_data_present:
+        print(f"Отсутствуют необходимые колонки для визуализации сценария {scenario_name}")
+        return
+    
+    # Добавление скользящего среднего для сглаживания данных
+    window_size = 5  # Размер окна для сглаживания
+    
+    # Применяем сглаживание для каждой модели
+    for df in [threshold_df, qlearning_df, hybrid_df]:
+        df['smooth_latency'] = df['latency'].rolling(window=window_size, min_periods=1).mean()
+        df['smooth_jitter'] = df['jitter'].rolling(window=window_size, min_periods=1).mean()
+        
+        # Заполняем пропущенные значения линейной интерполяцией
+        df['smooth_latency'] = df['smooth_latency'].interpolate(method='linear')
+        df['smooth_jitter'] = df['smooth_jitter'].interpolate(method='linear')
+        
+        # Обработка краевых значений (начало и конец временного ряда)
+        df['smooth_latency'] = df['smooth_latency'].fillna(method='bfill').fillna(method='ffill')
+        df['smooth_jitter'] = df['smooth_jitter'].fillna(method='bfill').fillna(method='ffill')
+    
+    # Создаем фигуру с общей осью X для лучшей сопоставимости
+    fig, axes = plt.subplots(3, 1, figsize=(15, 10), sharex=True)
+    
+    # Общий диапазон данных для согласования осей Y
+    all_latency = pd.concat([threshold_df['latency'], qlearning_df['latency'], hybrid_df['latency']])
+    all_jitter = pd.concat([threshold_df['jitter'], qlearning_df['jitter'], hybrid_df['jitter']])
+    
+    # Исключаем выбросы для лучшего масштабирования (99 процентиль)
+    latency_max = np.percentile(all_latency, 99)
+    jitter_max = np.percentile(all_jitter, 99)
+    
+    # Определяем пороговые значения для обозначения на графиках
+    latency_threshold = 50  # Пример порогового значения задержки (настройте при необходимости)
+    jitter_threshold = 25   # Пример порогового значения джиттера (настройте при необходимости)
+    
+    # Цветовая схема для моделей
+    latency_color = 'blue'
+    jitter_color = 'red'
+    reactive_migration_color = 'orange'
+    proactive_migration_color = 'green'
+    threshold_line_color = 'gray'
+    
+    # Функция для добавления отметок миграций оптимизированным способом
+    def add_migration_markers(ax, df, model_type):
+        # Группируем миграции по близости для уменьшения визуального шума
+        if 'migration_performed' in df.columns and 'migration_success' in df.columns:
+            successful_migrations = df[(df['migration_performed'] == True) & 
+                                       (df['migration_success'] == True)]
+            
+            # Если это гибридная модель, разделяем типы миграций
+            if model_type == 'hybrid' and 'migration_mode' in df.columns:
+                reactive = successful_migrations[successful_migrations['migration_mode'] == 'reactive']
+                proactive = successful_migrations[successful_migrations['migration_mode'] == 'proactive']
+                
+                # Добавляем полупрозрачные области вместо линий для групп миграций
+                for t in reactive['time']:
+                    ax.axvspan(t-0.5, t+0.5, alpha=0.2, color=reactive_migration_color)
+                
+                for t in proactive['time']:
+                    ax.axvspan(t-0.5, t+0.5, alpha=0.2, color=proactive_migration_color)
+                
+                # Добавляем небольшие маркеры для индивидуальных миграций
+                ax.scatter(reactive['time'], [latency_max * 0.1] * len(reactive), 
+                          marker='|', color=reactive_migration_color, alpha=0.7, s=15,
+                          label='Реактивные миграции')
+                
+                ax.scatter(proactive['time'], [latency_max * 0.1] * len(proactive), 
+                          marker='|', color=proactive_migration_color, alpha=0.7, s=15,
+                          label='Проактивные миграции')
+            else:
+                # Для не-гибридных моделей просто добавляем маркеры миграций
+                for t in successful_migrations['time']:
+                    ax.axvspan(t-0.5, t+0.5, alpha=0.2, color='green')
+                
+                ax.scatter(successful_migrations['time'], 
+                          [latency_max * 0.1] * len(successful_migrations), 
+                          marker='|', color='green', alpha=0.7, s=15,
+                          label='Миграции')
     
     # Подграфик для пороговой модели
-    plt.subplot(3, 1, 1)
-    plt.plot(threshold_df['time'], threshold_df['latency'], label='Задержка', color='blue', linewidth=2)
-    plt.plot(threshold_df['time'], threshold_df['jitter'], label='Джиттер', color='red', linewidth=2)
-    plt.title(f'Задержка и джиттер: {model_display_names["threshold"]}', fontsize=12)
-    plt.ylabel('мс', fontsize=10)
-    plt.grid(True, linestyle='--', alpha=0.7)
-    plt.legend()
+    ax1 = axes[0]
+    ax1.plot(threshold_df['time'], threshold_df['smooth_latency'], 
+            label='Задержка', color=latency_color, linewidth=2)
+    ax1.plot(threshold_df['time'], threshold_df['smooth_jitter'], 
+            label='Джиттер', color=jitter_color, linewidth=2)
+    
+    # Добавляем пороговые линии
+    ax1.axhline(y=latency_threshold, color=threshold_line_color, linestyle='--', alpha=0.5)
+    ax1.axhline(y=jitter_threshold, color=threshold_line_color, linestyle='-.', alpha=0.5)
+    
+    add_migration_markers(ax1, threshold_df, 'threshold')
+    
+    ax1.set_title(f'Задержка и джиттер: {model_display_names["threshold"]}', fontsize=12)
+    ax1.set_ylabel('мс', fontsize=10)
+    ax1.set_ylim(0, min(latency_max * 1.1, 200))  # Ограничиваем максимум для лучшей визуализации
+    ax1.grid(True, linestyle='--', alpha=0.7)
+    ax1.legend(fontsize=9, loc='upper right')
     
     # Подграфик для Q-Learning модели
-    plt.subplot(3, 1, 2)
-    plt.plot(qlearning_df['time'], qlearning_df['latency'], label='Задержка', color='blue', linewidth=2)
-    plt.plot(qlearning_df['time'], qlearning_df['jitter'], label='Джиттер', color='red', linewidth=2)
-    plt.title(f'Задержка и джиттер: {model_display_names["qlearning"]}', fontsize=12)
-    plt.ylabel('мс', fontsize=10)
-    plt.grid(True, linestyle='--', alpha=0.7)
-    plt.legend()
+    ax2 = axes[1]
+    ax2.plot(qlearning_df['time'], qlearning_df['smooth_latency'], 
+            label='Задержка', color=latency_color, linewidth=2)
+    ax2.plot(qlearning_df['time'], qlearning_df['smooth_jitter'], 
+            label='Джиттер', color=jitter_color, linewidth=2)
+    
+    # Добавляем пороговые линии
+    ax2.axhline(y=latency_threshold, color=threshold_line_color, linestyle='--', alpha=0.5)
+    ax2.axhline(y=jitter_threshold, color=threshold_line_color, linestyle='-.', alpha=0.5)
+    
+    add_migration_markers(ax2, qlearning_df, 'qlearning')
+    
+    ax2.set_title(f'Задержка и джиттер: {model_display_names["qlearning"]}', fontsize=12)
+    ax2.set_ylabel('мс', fontsize=10)
+    ax2.set_ylim(0, min(latency_max * 1.1, 200))  # Ограничиваем максимум для лучшей визуализации
+    ax2.grid(True, linestyle='--', alpha=0.7)
+    ax2.legend(fontsize=9, loc='upper right')
     
     # Подграфик для гибридной модели
-    plt.subplot(3, 1, 3)
-    plt.plot(hybrid_df['time'], hybrid_df['latency'], label='Задержка', color='blue', linewidth=2)
-    plt.plot(hybrid_df['time'], hybrid_df['jitter'], label='Джиттер', color='red', linewidth=2)
-    plt.title(f'Задержка и джиттер: {model_display_names["hybrid"]}', fontsize=12)
-    plt.xlabel('Время (такты)', fontsize=10)
-    plt.ylabel('мс', fontsize=10)
-    plt.grid(True, linestyle='--', alpha=0.7)
-    plt.legend()
+    ax3 = axes[2]
+    ax3.plot(hybrid_df['time'], hybrid_df['smooth_latency'], 
+            label='Задержка', color=latency_color, linewidth=2)
+    ax3.plot(hybrid_df['time'], hybrid_df['smooth_jitter'], 
+            label='Джиттер', color=jitter_color, linewidth=2)
+    
+    # Добавляем пороговые линии
+    ax3.axhline(y=latency_threshold, color=threshold_line_color, linestyle='--', alpha=0.5)
+    ax3.axhline(y=jitter_threshold, color=threshold_line_color, linestyle='-.', alpha=0.5)
+    
+    add_migration_markers(ax3, hybrid_df, 'hybrid')
+    
+    ax3.set_title(f'Задержка и джиттер: {model_display_names["hybrid"]}', fontsize=12)
+    ax3.set_xlabel('Время (такты)', fontsize=10)
+    ax3.set_ylabel('мс', fontsize=10)
+    ax3.set_ylim(0, min(latency_max * 1.1, 200))  # Ограничиваем максимум для лучшей визуализации
+    ax3.grid(True, linestyle='--', alpha=0.7)
+    ax3.legend(fontsize=9, loc='upper right')
+    
+    # Добавляем аннотации с ключевыми статистиками
+    def add_stats_annotations(ax, df, y_pos):
+        avg_latency = df['latency'].mean()
+        max_latency = df['latency'].max()
+        avg_jitter = df['jitter'].mean()
+        
+        stats_text = f"Средняя задержка: {avg_latency:.2f} мс\n" \
+                     f"Макс. задержка: {max_latency:.2f} мс\n" \
+                     f"Средний джиттер: {avg_jitter:.2f} мс"
+        
+        # Размещаем текст в верхнем левом углу
+        ax.text(0.02, y_pos, stats_text, transform=ax.transAxes,
+                bbox=dict(facecolor='white', alpha=0.7, edgecolor='gray', boxstyle='round,pad=0.5'),
+                fontsize=8, verticalalignment='top')
+    
+    # Добавляем аннотации для каждой модели
+    add_stats_annotations(ax1, threshold_df, 0.98)
+    add_stats_annotations(ax2, qlearning_df, 0.98)
+    add_stats_annotations(ax3, hybrid_df, 0.98)
     
     # Общий заголовок
     plt.suptitle(f'Метрики задержки и джиттера для сценария: {scenario_title}', 
                  fontsize=14, fontweight='bold', y=0.98)
     
     plt.tight_layout()
-    plt.subplots_adjust(top=0.93)
+    plt.subplots_adjust(top=0.93, hspace=0.25)
+    
+    # Добавляем общую легенду для миграций
+    handles, labels = [], []
+    handles.append(plt.Line2D([0], [0], color=latency_color, lw=2))
+    labels.append('Задержка')
+    handles.append(plt.Line2D([0], [0], color=jitter_color, lw=2))
+    labels.append('Джиттер')
+    handles.append(plt.Line2D([0], [0], color=threshold_line_color, linestyle='--', lw=1))
+    labels.append('Пороговые значения')
+    handles.append(plt.Line2D([0], [0], color='green', marker='|', lw=0, markersize=8))
+    labels.append('Миграции')
+    
+    if any('migration_mode' in df.columns for df in [threshold_df, qlearning_df, hybrid_df]):
+        handles.append(plt.Line2D([0], [0], color=reactive_migration_color, marker='|', lw=0, markersize=8))
+        labels.append('Реактивные миграции')
+        handles.append(plt.Line2D([0], [0], color=proactive_migration_color, marker='|', lw=0, markersize=8))
+        labels.append('Проактивные миграции')
+    
+    fig.legend(handles, labels, loc='lower center', ncol=3, bbox_to_anchor=(0.5, 0.01),
+               fontsize=9, frameon=True, facecolor='white', edgecolor='gray')
+    
+    # Обновляем отступ снизу для размещения общей легенды
+    plt.subplots_adjust(bottom=0.1)
+    
     plt.savefig(f'plots/{scenario_name}_latency_jitter.png', dpi=300, bbox_inches='tight')
     
     if DEBUG:
@@ -361,8 +517,174 @@ def plot_model_performance_per_scenario(scenario_name):
     plt.close()
     
 def plot_energy_comparison(scenario_name):
+        """
+        График сравнения энергопотребления между моделями с исправленными единицами
+        
+        Параметры:
+        ----------
+        scenario_name : str
+            Название сценария
+        """
+        # Загружаем данные для всех моделей
+        threshold_df = load_results(scenario_name, 'threshold')
+        qlearning_df = load_results(scenario_name, 'qlearning')
+        hybrid_df = load_results(scenario_name, 'hybrid')
+        
+        if threshold_df is None or qlearning_df is None or hybrid_df is None:
+            print(f"Недостаточно данных для построения графиков энергопотребления для сценария {scenario_name}")
+            return
+        
+        # Проверяем наличие колонок
+        if 'energy_consumption' not in threshold_df.columns or 'energy_consumption' not in qlearning_df.columns or 'energy_consumption' not in hybrid_df.columns:
+            print(f"Отсутствуют данные об энергопотреблении для сценария {scenario_name}")
+            return
+        
+        # Русские названия сценариев
+        scenario_display_names = {
+            'critical': 'Критический',
+            'standard': 'Стандартный',
+            'mixed': 'Смешанный',
+            'dynamic': 'Динамический',
+            'limited_resources': 'Ограниченные ресурсы'
+        }
+        
+        scenario_title = scenario_display_names.get(scenario_name, scenario_name)
+        
+        # График энергопотребления для всех моделей
+        plt.figure(figsize=(12, 8))
+        
+        # Создаем два подграфика
+        # 1. Мгновенное энергопотребление
+        plt.subplot(2, 1, 1)
+        
+        # Убедимся, что все модели видны, используем разные цвета и стили линий
+        plt.plot(threshold_df['time'], threshold_df['energy_consumption'], 
+                label='Пороговая модель', color=COLOR_THRESHOLD, linewidth=2, alpha=0.9)
+        plt.plot(qlearning_df['time'], qlearning_df['energy_consumption'], 
+                label='Q-Learning модель', color=COLOR_QLEARNING, linewidth=2, alpha=0.9)
+        plt.plot(hybrid_df['time'], hybrid_df['energy_consumption'], 
+                label='Гибридная модель', color=COLOR_HYBRID, linewidth=2, alpha=0.9)
+        
+        plt.title(f'Мгновенное энергопотребление', fontsize=12)
+        plt.ylabel('Энергопотребление (кВт·ч)', fontsize=10)
+        plt.grid(True, linestyle='--', alpha=0.7)
+        plt.legend(fontsize=10)
+        
+        # 2. Кумулятивное энергопотребление
+        plt.subplot(2, 1, 2)
+        
+        # Вычисляем кумулятивное энергопотребление
+        threshold_cum = threshold_df['energy_consumption'].cumsum()
+        qlearning_cum = qlearning_df['energy_consumption'].cumsum()
+        hybrid_cum = hybrid_df['energy_consumption'].cumsum()
+        
+        plt.plot(threshold_df['time'], threshold_cum, 
+                label='Пороговая модель', color=COLOR_THRESHOLD, linewidth=2, alpha=0.9)
+        plt.plot(qlearning_df['time'], qlearning_cum, 
+                label='Q-Learning модель', color=COLOR_QLEARNING, linewidth=2, alpha=0.9)
+        plt.plot(hybrid_df['time'], hybrid_cum, 
+                label='Гибридная модель', color=COLOR_HYBRID, linewidth=2, alpha=0.9)
+        
+        plt.title(f'Кумулятивное энергопотребление', fontsize=12)
+        plt.xlabel('Время (такты)', fontsize=10)
+        plt.ylabel('Суммарное энергопотребление (кВт·ч)', fontsize=10)
+        plt.grid(True, linestyle='--', alpha=0.7)
+        plt.legend(fontsize=10)
+        
+        # Общий заголовок
+        plt.suptitle(f'Энергопотребление для сценария: {scenario_title}', 
+                    fontsize=14, fontweight='bold')
+        
+        plt.tight_layout()
+        plt.subplots_adjust(top=0.92)
+        plt.savefig(f'plots/{scenario_name}_energy.png', dpi=300, bbox_inches='tight')
+        
+        if DEBUG:
+            print(f"График сохранен: plots/{scenario_name}_energy.png")
+        
+        plt.close()
+
+# def plot_resource_utilization(scenario_name):
+    # """
+    # Создает графики утилизации CPU и RAM для всех моделей
+    
+    # Параметры:
+    # ----------
+    # scenario_name : str
+    #     Название сценария
+    # """
+    # # Загружаем данные для всех моделей
+    # threshold_df = load_results(scenario_name, 'threshold')
+    # qlearning_df = load_results(scenario_name, 'qlearning')
+    # hybrid_df = load_results(scenario_name, 'hybrid')
+    
+    # if threshold_df is None or qlearning_df is None or hybrid_df is None:
+    #     print(f"Недостаточно данных для построения графиков утилизации ресурсов для сценария {scenario_name}")
+    #     return
+    
+    # # Убедимся, что нужные колонки присутствуют
+    # required_columns = ['time', 'cpu_utilization', 'ram_utilization']
+    # if not all(col in threshold_df.columns for col in required_columns):
+    #     print(f"Отсутствуют необходимые колонки в данных для сценария {scenario_name}")
+    #     return
+    
+    # # Русские названия сценариев
+    # scenario_display_names = {
+    #     'critical': 'Критический',
+    #     'standard': 'Стандартный',
+    #     'mixed': 'Смешанный',
+    #     'dynamic': 'Динамический',
+    #     'limited_resources': 'Ограниченные ресурсы'
+    # }
+    
+    # scenario_title = scenario_display_names.get(scenario_name, scenario_name)
+    
+    # # График утилизации ресурсов
+    # plt.figure(figsize=(12, 8))
+    
+    # # График утилизации CPU
+    # plt.subplot(2, 1, 1)
+    # plt.plot(threshold_df['time'], threshold_df['cpu_utilization'], 
+    #          label='Пороговая модель', color=COLOR_THRESHOLD, linewidth=2)
+    # plt.plot(qlearning_df['time'], qlearning_df['cpu_utilization'], 
+    #          label='Q-Learning модель', color=COLOR_QLEARNING, linewidth=2)
+    # plt.plot(hybrid_df['time'], hybrid_df['cpu_utilization'], 
+    #          label='Гибридная модель', color=COLOR_HYBRID, linewidth=2)
+    # plt.title('Утилизация CPU', fontsize=12)
+    # plt.ylabel('Загрузка CPU (0-1)', fontsize=10)
+    # plt.grid(True, linestyle='--', alpha=0.7)
+    # plt.legend()
+    
+    # # График утилизации RAM
+    # plt.subplot(2, 1, 2)
+    # plt.plot(threshold_df['time'], threshold_df['ram_utilization'], 
+    #          label='Пороговая модель', color=COLOR_THRESHOLD, linewidth=2)
+    # plt.plot(qlearning_df['time'], qlearning_df['ram_utilization'], 
+    #          label='Q-Learning модель', color=COLOR_QLEARNING, linewidth=2)
+    # plt.plot(hybrid_df['time'], hybrid_df['ram_utilization'], 
+    #          label='Гибридная модель', color=COLOR_HYBRID, linewidth=2)
+    # plt.title('Утилизация RAM', fontsize=12)
+    # plt.xlabel('Время (такты)', fontsize=10)
+    # plt.ylabel('Загрузка RAM (0-1)', fontsize=10)
+    # plt.grid(True, linestyle='--', alpha=0.7)
+    # plt.legend()
+    
+    # # Общий заголовок
+    # plt.suptitle(f'Утилизация ресурсов для сценария: {scenario_title}', 
+    #             fontsize=14, fontweight='bold')
+    
+    # plt.tight_layout()
+    # plt.subplots_adjust(top=0.92)
+    # plt.savefig(f'plots/{scenario_name}_resource_utilization.png', dpi=300, bbox_inches='tight')
+    
+    # if DEBUG:
+    #     print(f"График сохранен: plots/{scenario_name}_resource_utilization.png")
+    
+    # plt.close()
+
+def plot_energy_breakdown(scenario_name):
     """
-    График сравнения энергопотребления между моделями
+    График разбивки энергопотребления на базовое и миграционное для трёх моделей
     
     Параметры:
     ----------
@@ -378,64 +700,11 @@ def plot_energy_comparison(scenario_name):
         print(f"Недостаточно данных для построения графиков энергопотребления для сценария {scenario_name}")
         return
     
-    # Русские названия сценариев
-    scenario_display_names = {
-        'critical': 'Критический',
-        'standard': 'Стандартный',
-        'mixed': 'Смешанный',
-        'dynamic': 'Динамический',
-        'limited_resources': 'Ограниченные ресурсы'
-    }
-    
-    scenario_title = scenario_display_names.get(scenario_name, scenario_name)
-    
-    # График энергопотребления для всех моделей
-    plt.figure(figsize=(12, 6))
-    
-    # Убедимся, что все модели видны, используем разные цвета и стили линий
-    plt.plot(threshold_df['time'], threshold_df['energy_consumption'], 
-             label='Пороговая модель', color=COLOR_THRESHOLD, linewidth=2, alpha=0.9)
-    plt.plot(qlearning_df['time'], qlearning_df['energy_consumption'], 
-             label='Q-Learning модель', color=COLOR_QLEARNING, linewidth=2, alpha=0.9)
-    plt.plot(hybrid_df['time'], hybrid_df['energy_consumption'], 
-             label='Гибридная модель', color=COLOR_HYBRID, linewidth=2, alpha=0.9)
-    
-    plt.title(f'Энергопотребление для сценария: {scenario_title}', fontsize=14, fontweight='bold')
-    plt.xlabel('Время (такты)', fontsize=12)
-    plt.ylabel('Энергопотребление (Вт)', fontsize=12)
-    plt.grid(True, linestyle='--', alpha=0.7)
-    plt.legend(fontsize=10)
-    
-    plt.tight_layout()
-    plt.savefig(f'plots/{scenario_name}_energy.png', dpi=300, bbox_inches='tight')
-    
-    if DEBUG:
-        print(f"График сохранен: plots/{scenario_name}_energy.png")
-    
-    plt.close()
-
-# def plot_resource_utilization(scenario_name):
-    """
-    Создает графики утилизации CPU и RAM для всех моделей
-    
-    Параметры:
-    ----------
-    scenario_name : str
-        Название сценария
-    """
-    # Загружаем данные для всех моделей
-    threshold_df = load_results(scenario_name, 'threshold')
-    qlearning_df = load_results(scenario_name, 'qlearning')
-    hybrid_df = load_results(scenario_name, 'hybrid')
-    
-    if threshold_df is None or qlearning_df is None or hybrid_df is None:
-        print(f"Недостаточно данных для построения графиков утилизации ресурсов для сценария {scenario_name}")
-        return
-    
-    # Убедимся, что нужные колонки присутствуют
-    required_columns = ['time', 'cpu_utilization', 'ram_utilization']
-    if not all(col in threshold_df.columns for col in required_columns):
-        print(f"Отсутствуют необходимые колонки в данных для сценария {scenario_name}")
+    # Проверяем наличие необходимых колонок
+    required_columns = ['baseline_energy', 'migration_energy']
+    if not all(col in threshold_df.columns and col in qlearning_df.columns and col in hybrid_df.columns 
+               for col in required_columns):
+        print(f"Отсутствуют необходимые данные о разбивке энергопотребления для сценария {scenario_name}")
         return
     
     # Русские названия сценариев
@@ -449,46 +718,73 @@ def plot_energy_comparison(scenario_name):
     
     scenario_title = scenario_display_names.get(scenario_name, scenario_name)
     
-    # График утилизации ресурсов
+    # Получаем суммарные значения по категориям энергопотребления
+    threshold_base = threshold_df['baseline_energy'].sum()
+    threshold_migration = threshold_df['migration_energy'].sum()
+    
+    qlearning_base = qlearning_df['baseline_energy'].sum()
+    qlearning_migration = qlearning_df['migration_energy'].sum()
+    
+    hybrid_base = hybrid_df['baseline_energy'].sum()
+    hybrid_migration = hybrid_df['migration_energy'].sum()
+    
+    # Создаем график разбивки энергопотребления
     plt.figure(figsize=(12, 8))
     
-    # График утилизации CPU
-    plt.subplot(2, 1, 1)
-    plt.plot(threshold_df['time'], threshold_df['cpu_utilization'], 
-             label='Пороговая модель', color=COLOR_THRESHOLD, linewidth=2)
-    plt.plot(qlearning_df['time'], qlearning_df['cpu_utilization'], 
-             label='Q-Learning модель', color=COLOR_QLEARNING, linewidth=2)
-    plt.plot(hybrid_df['time'], hybrid_df['cpu_utilization'], 
-             label='Гибридная модель', color=COLOR_HYBRID, linewidth=2)
-    plt.title('Утилизация CPU', fontsize=12)
-    plt.ylabel('Загрузка CPU (0-1)', fontsize=10)
-    plt.grid(True, linestyle='--', alpha=0.7)
-    plt.legend()
+    # Подготовка данных для графика
+    models = ['Пороговая\nмодель', 'Q-Learning\nмодель', 'Гибридная\nмодель']
+    base_energy = [threshold_base, qlearning_base, hybrid_base]
+    migration_energy = [threshold_migration, qlearning_migration, hybrid_migration]
     
-    # График утилизации RAM
-    plt.subplot(2, 1, 2)
-    plt.plot(threshold_df['time'], threshold_df['ram_utilization'], 
-             label='Пороговая модель', color=COLOR_THRESHOLD, linewidth=2)
-    plt.plot(qlearning_df['time'], qlearning_df['ram_utilization'], 
-             label='Q-Learning модель', color=COLOR_QLEARNING, linewidth=2)
-    plt.plot(hybrid_df['time'], hybrid_df['ram_utilization'], 
-             label='Гибридная модель', color=COLOR_HYBRID, linewidth=2)
-    plt.title('Утилизация RAM', fontsize=12)
-    plt.xlabel('Время (такты)', fontsize=10)
-    plt.ylabel('Загрузка RAM (0-1)', fontsize=10)
-    plt.grid(True, linestyle='--', alpha=0.7)
-    plt.legend()
+    x = np.arange(len(models))
+    width = 0.35
     
-    # Общий заголовок
-    plt.suptitle(f'Утилизация ресурсов для сценария: {scenario_title}', 
-                fontsize=14, fontweight='bold')
+    # Создаем столбчатую диаграмму
+    plt.bar(x, base_energy, width, label='Базовое энергопотребление', 
+            color=['lightskyblue', 'lightgreen', 'lightcoral'])
+    plt.bar(x, migration_energy, width, bottom=base_energy, 
+            label='Энергопотребление миграций', 
+            color=['steelblue', 'seagreen', 'indianred'])
+    
+    # Добавляем подписи процентов и абсолютных значений
+    total_energy = [b + m for b, m in zip(base_energy, migration_energy)]
+    
+    for i in range(len(models)):
+        base_pct = base_energy[i] / total_energy[i] * 100
+        mig_pct = migration_energy[i] / total_energy[i] * 100
+        
+        # Подписи для базового энергопотребления
+        plt.text(x[i], base_energy[i]/2, f"{base_pct:.1f}%", 
+                 ha='center', va='center', color='black', fontweight='bold')
+        
+        # Подписи для миграционного энергопотребления
+        plt.text(x[i], base_energy[i] + migration_energy[i]/2, f"{mig_pct:.1f}%", 
+                 ha='center', va='center', color='black', fontweight='bold')
+        
+        # Общее энергопотребление
+        plt.text(x[i], total_energy[i] + 0.5, f"{total_energy[i]:.2f} кВт·ч", 
+                 ha='center', va='bottom')
+    
+    # Настраиваем отображение графика
+    plt.title(f'Разбивка энергопотребления по компонентам для сценария: {scenario_title}', 
+              fontsize=14, fontweight='bold')
+    plt.ylabel('Энергопотребление (кВт·ч)', fontsize=12)
+    plt.xticks(x, models, fontsize=10)
+    plt.yticks(fontsize=10)
+    plt.grid(True, linestyle='--', alpha=0.7, axis='y')
+    plt.legend(fontsize=10, loc='upper center')
+    
+    # Добавляем информацию об эффективности моделей
+    plt.figtext(0.5, 0.01, 
+               f"Общее энергопотребление: Пороговая модель = {total_energy[0]:.2f} кВт·ч, " +
+               f"Q-Learning = {total_energy[1]:.2f} кВт·ч, Гибридная = {total_energy[2]:.2f} кВт·ч",
+               ha='center', fontsize=10)
     
     plt.tight_layout()
-    plt.subplots_adjust(top=0.92)
-    plt.savefig(f'plots/{scenario_name}_resource_utilization.png', dpi=300, bbox_inches='tight')
+    plt.savefig(f'plots/{scenario_name}_energy_breakdown.png', dpi=300, bbox_inches='tight')
     
     if DEBUG:
-        print(f"График сохранен: plots/{scenario_name}_resource_utilization.png")
+        print(f"График сохранен: plots/{scenario_name}_energy_breakdown.png")
     
     plt.close()
 
@@ -703,7 +999,7 @@ def main():
     # 1. График со всеми моделями и сценариями по количеству миграций
     plot_all_models_migrations()
     
-    # 2. Графики производительности для каждого сценария
+    # 2. Графики для каждого сценария
     for scenario in scenarios:
         # Графики задержки и джиттера
         plot_model_performance_per_scenario(scenario)
@@ -711,14 +1007,14 @@ def main():
         # Графики энергопотребления
         plot_energy_comparison(scenario)
         
-        # Графики утилизации ресурсов
-        # plot_resource_utilization(scenario)
+        # Новые графики разбивки энергопотребления
+        plot_energy_breakdown(scenario)
     
-    # 3. Создание и вывод таблицы со всеми средними значениями
+    # 3. Создание и вывод сводной таблицы
     print("\nСводная таблица результатов:")
     summary_table = generate_summary_table()
     
-    # Вывод таблицы в консоль с красивым форматированием
+    # Вывод таблицы в консоль
     if summary_table is not None:
         try:
             print(tabulate(summary_table, headers='keys', tablefmt='grid', showindex=False))
