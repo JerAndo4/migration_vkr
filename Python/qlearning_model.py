@@ -458,7 +458,6 @@ class QLearningModel:
         """
         Обработка одного шага симуляции для Q-Learning модели с корректным учетом метрик
         """
-
         # Проверка инициализации метрик
         if 'energy_consumption' not in self.metrics:
             self.metrics['energy_consumption'] = []
@@ -479,53 +478,40 @@ class QLearningModel:
         # Дискретизируем текущее состояние
         current_state = self.discretize_state()
 
-        # Расчет базового энергопотребления для  модели
-        baseline_power = 0.06  # кВт базовая мощность на узел
+        # Расчет базового энергопотребления с небольшой вариативностью
+        load_variation = 1.0 + np.random.uniform(-0.05, 0.05)
+        baseline_power = 0.06 * load_variation  # кВт базовая мощность на узел
         load_factor = sum(self.node_loads) / self.num_nodes  # средняя загрузка
         baseline_energy = baseline_power * self.num_nodes * load_factor * (5/60)  # кВт·ч за такт
         self.metrics['energy_consumption'].append(baseline_energy)
         
-        # Базовая задержка обработки запросов для модели
-        base_latency = 4.0  # мс
-        self.metrics['latency'].append(base_latency)
+        # Базовая задержка обработки запросов с вариативностью
+        base_variation = np.random.uniform(0.9, 1.1)  # ±10% вариативность
+        base_latency = 4.0 * base_variation  # мс - ниже чем у пороговой
         
-        # Вычисляем джиттер
-        if len(self.metrics['latency']) > 1:
-            jitter = abs(self.metrics['latency'][-1] - self.metrics['latency'][-2])
-            self.metrics['jitter'].append(jitter)
-        else:
-            self.metrics['jitter'].append(0)
-        
-        # Предсказываем будущую загрузку
-        predicted_load, max_predicted_load = self.predict_future_load()
-        
+        # Инициализация метрик шага
         step_metrics = {
-            'latency': 0,
+            'latency': base_latency,
             'jitter': 0,
             'migration_performed': False,
             'migration_success': False,
             'migration_mode': 'proactive'
         }
         
-        # Расчет базового энергопотребления для Q-Learning модели
-        # Более высокое потребление из-за сложности алгоритмов машинного обучения
-        baseline_power = 0.06  # кВт базовая мощность на узел
-        load_factor = sum(self.node_loads) / self.num_nodes  # средняя загрузка
-        
-        # Пересчитываем в кВт·ч за один такт (5 минут = 1/12 часа)
-        baseline_energy = baseline_power * self.num_nodes * load_factor * (5/60)
-        
-        # Добавляем базовое энергопотребление
-        self.metrics['energy_consumption'].append(baseline_energy)
-        
-        # Базовая задержка обработки запросов для Q-Learning модели
-        base_latency = 4.0  # мс - ниже чем у пороговой
-        
         # Обновляем счетчики периодов остывания
         self.cooling_counters = np.maximum(0, self.cooling_counters - 1)
         
+        # Предсказываем будущую загрузку
+        predicted_load, max_predicted_load = self.predict_future_load()
+        
         # Проверяем необходимость миграции
-        if max_predicted_load > self.prediction_threshold:
+        # Добавляем небольшую случайность в принятие решения о миграции
+        migration_threshold = self.prediction_threshold
+        if np.random.random() < 0.05:  # 5% шанс на небольшое изменение порога
+            migration_threshold += np.random.uniform(-0.05, 0.05)
+            migration_threshold = max(0.6, min(0.85, migration_threshold))  # ограничиваем значение
+        
+        if max_predicted_load > migration_threshold:
             # Выбираем действие
             action = self.select_action(current_state, predicted_load)
             

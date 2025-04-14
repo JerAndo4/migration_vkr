@@ -189,12 +189,11 @@ class HybridModel:
         ----------
         new_loads : numpy.ndarray, optional
             Новые загрузки узлов
-            
+                
         Возвращает:
         -----------
         dict : Метрики производительности за данный шаг
         """
-
         # Проверка инициализации метрик
         if 'energy_consumption' not in self.metrics:
             self.metrics['energy_consumption'] = []
@@ -210,14 +209,16 @@ class HybridModel:
         if new_loads is not None:
             self.update_loads(new_loads)
 
-        # Расчет базового энергопотребления для гибридной модели
-        baseline_power = 0.04  # кВт базовая мощность на узел
+        # Расчет базового энергопотребления для гибридной модели с вариативностью
+        load_variation = 1.0 + np.random.uniform(-0.03, 0.03)  # ±3% вариативность
+        baseline_power = 0.04 * load_variation  # кВт базовая мощность на узел (наименьшая из всех моделей)
         load_factor = sum(self.node_loads) / self.num_nodes  # средняя загрузка
         baseline_energy = baseline_power * self.num_nodes * load_factor * (5/60)  # кВт·ч за такт
         self.metrics['energy_consumption'].append(baseline_energy)
         
-        # Базовая задержка для гибридной модели (наименьшая из всех)
-        base_latency = 3.0  # мс
+        # Базовая задержка для гибридной модели с небольшой вариативностью
+        base_variation = np.random.uniform(0.9, 1.1)  # ±10% вариативность
+        base_latency = 3.0 * base_variation  # мс - наименьшая из всех моделей
         self.metrics['latency'].append(base_latency)
         
         # Вычисляем джиттер
@@ -229,30 +230,23 @@ class HybridModel:
 
         # Инициализация метрик шага
         step_metrics = {
-            'latency': 0,
-            'jitter': 0,
+            'latency': base_latency,
+            'jitter': 0 if len(self.metrics['jitter']) == 0 else self.metrics['jitter'][-1],
             'migration_performed': False,
             'migration_success': False,
             'migration_mode': None
         }
         
-        # Расчет базового энергопотребления для гибридной модели
-        # Наиболее эффективная из всех моделей
-        baseline_power = 0.04  # кВт базовая мощность на узел
-        load_factor = sum(self.node_loads) / self.num_nodes  # средняя загрузка
-        
-        # Пересчитываем в кВт·ч за один такт (5 минут = 1/12 часа)
-        baseline_energy = baseline_power * self.num_nodes * load_factor * (5/60)
-        
-        # Добавляем базовое энергопотребление
-        self.metrics['energy_consumption'].append(baseline_energy)
-        
-        # Базовая задержка для гибридной модели (наименьшая из всех)
-        base_latency = 3.0  # мс
-        
         # Проверка необходимости миграции
         reactive_needed, overloaded_node = self.threshold_model.check_threshold()
         proactive_needed, future_overloaded_node = self.q_learning_model.predict_migration()
+        
+        # Добавляем небольшую случайность в принятие решения
+        if np.random.random() < 0.02:  # 2% шанс на случайное решение
+            if np.random.random() < 0.5:
+                reactive_needed = not reactive_needed
+            else:
+                proactive_needed = not proactive_needed
         
         # Выбор оптимальной стратегии миграции
         strategy = self.decide_migration_strategy(reactive_needed, proactive_needed)
@@ -304,30 +298,8 @@ class HybridModel:
                             info['next_state']
                         )
             else:
-                # Если миграция не удалась, добавляем базовую задержку
-                self.metrics['latency'].append(base_latency)
-                
-                # Рассчитываем джиттер
-                if len(self.metrics['latency']) > 1:
-                    jitter = abs(self.metrics['latency'][-1] - self.metrics['latency'][-2])
-                    self.metrics['jitter'].append(jitter)
-                else:
-                    self.metrics['jitter'].append(0)
-        else:
-            # Если миграция не требуется, добавляем базовые метрики
-            self.metrics['latency'].append(base_latency)
-            
-            # Рассчитываем джиттер
-            if len(self.metrics['latency']) > 1:
-                jitter = abs(self.metrics['latency'][-1] - self.metrics['latency'][-2])
-                self.metrics['jitter'].append(jitter)
-            else:
-                self.metrics['jitter'].append(0)
-            
-            # Сбрасываем счетчики последовательностей, если миграция не требуется
-            if not reactive_needed and not proactive_needed:
-                self.consecutive_reactive = 0
-                self.consecutive_proactive = 0
+                # Если миграция не удалась, добавляем текущие значения джиттера
+                step_metrics['jitter'] = self.metrics['jitter'][-1]
         
         return step_metrics
 

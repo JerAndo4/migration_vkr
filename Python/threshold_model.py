@@ -310,7 +310,7 @@ class ThresholdModel:
     
     def process_step(self, new_loads=None):
         """
-        Обработка одного шага симуляции с корректным учетом энергопотребления
+        Обработка одного шага симуляции с корректным учетом энергопотребления и задержки
         
         Параметры:
         ----------
@@ -321,7 +321,7 @@ class ThresholdModel:
         -----------
         dict : Метрики производительности за данный шаг
         """
-
+        # Проверка инициализации метрик
         if 'energy_consumption' not in self.metrics:
             self.metrics['energy_consumption'] = []
         if 'latency' not in self.metrics:
@@ -332,40 +332,36 @@ class ThresholdModel:
         if new_loads is not None:
             self.node_loads = new_loads.copy()
         
-        # Всегда добавляем базовое энергопотребление
+        # Расчет базового энергопотребления
         baseline_power = 0.05  # кВт базовая мощность на узел
         load_factor = sum(self.node_loads) / self.num_nodes  # средняя загрузка
-        baseline_energy = baseline_power * self.num_nodes * load_factor * (5/60)  # кВт·ч за такт
+        
+        # Добавляем небольшую вариативность к базовой нагрузке (±5%)
+        load_variation = 1.0 + np.random.uniform(-0.05, 0.05)
+        load_factor *= load_variation
+        
+        # Пересчитываем в кВт·ч за один такт (5 минут = 1/12 часа)
+        baseline_energy = baseline_power * self.num_nodes * load_factor * (5/60)
+        
+        # Добавляем базовое энергопотребление
         self.metrics['energy_consumption'].append(baseline_energy)
         
-        # Всегда добавляем базовую задержку
-        base_latency = 5.0  # мс
+        # Вычисляем базовую задержку с небольшой вариативностью
+        # Это обеспечит более реалистичные графики для всех сценариев
+        base_variation = np.random.uniform(0.8, 1.2)  # ±20% вариативность
+        base_latency = 5.0 * base_variation  # мс
 
         # Проверяем превышение порога
         threshold_exceeded, overloaded_node = self.check_threshold()
         
         # Инициализация метрик шага
         step_metrics = {
-            'latency': 0,
+            'latency': base_latency,  # Используем вариативную базовую задержку как начальное значение
             'jitter': 0,
             'migration_performed': False,
             'migration_success': False,
             'migration_mode': 'reactive'
         }
-        
-        # Расчет базового энергопотребления
-        # Для пороговой модели нужно больше ресурсов на постоянный мониторинг
-        baseline_power = 0.05  # кВт базовая мощность на узел
-        load_factor = sum(self.node_loads) / self.num_nodes  # средняя загрузка
-        
-        # Пересчитываем в кВт·ч за один такт (5 минут = 1/12 часа)
-        baseline_energy = baseline_power * self.num_nodes * load_factor * (5/60)
-        
-        # Добавляем базовое энергопотребление за этот шаг
-        self.metrics['energy_consumption'].append(baseline_energy)
-        
-        # Базовая задержка обработки запросов (даже без миграций)
-        base_latency = 5.0  # мс
         
         if threshold_exceeded:
             # Выбираем сервис для миграции
